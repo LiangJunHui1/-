@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>体重记录表 - 梁 / 滕 / 乔</title>
+    <!-- 移除外部依赖以提速：内置字体栈与自绘图表 -->
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', Roboto, Arial, sans-serif;
+            background: #f5f7fb;
+            margin: 0; padding: 24px;
+            color: #1f2330;
+        }
+        .container {
+            max-width: 1100px; margin: 0 auto;
+            background: #fff; border-radius: 16px;
+            box-shadow: 0 16px 40px rgba(31,35,48,0.08);
+            /* 取消 overflow 限制，确保 sticky 生效 */
+            overflow: visible;
+        }
+        .header { padding: 28px 28px 12px; border-bottom: 1px solid #eef0f6; text-align: center; }
+        .title { font-size: 22px; font-weight: 600; margin: 0 0 6px; }
+        .sub { color: #667085; font-size: 13px; }
+        .motto { margin-top: 8px; display: inline-block; padding: 6px 12px; border-radius: 999px; background: #f1f5ff; color: #3730a3; font-size: 12px; box-shadow: inset 0 0 0 1px #e5e9ff; }
+
+        .tabs { display: flex; gap: 8px; padding: 14px 18px 0; border-bottom: 1px solid #eef0f6; }
+        .tab-btn {
+            appearance: none; border: 0; background: transparent; cursor: pointer;
+            padding: 10px 14px; border-radius: 10px 10px 0 0;
+            color: #667085; font-weight: 600; font-size: 14px;
+        }
+        .tab-btn.active { background: #eef2ff; color: #3730a3; box-shadow: inset 0 -2px 0 #6366f1; transition: all .2s ease; }
+        .tab-btn:not(.active):hover { transform: translateY(-1px); background: #f2f4ff; }
+
+        .content { padding: 18px; }
+        .section { display: none; }
+        .section.active { display: block; }
+
+        .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; color: #475467; font-size: 13px; }
+        .toolbar .range { font-variant-numeric: tabular-nums; }
+        .toolbar button {
+            padding: 8px 12px; border-radius: 10px; border: 1px solid #e4e7ef; background: #fff; cursor: pointer; color: #373a47;
+        }
+        .toolbar button:hover { background: #f3f4f8; }
+
+        table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        thead { background: #f5f7ff; position: sticky; top: 0; z-index: 5; box-shadow: 0 2px 0 #eef0f6; }
+        th, td { text-align: center; padding: 10px 8px; border-bottom: 1px solid #eef0f6; }
+        tr:nth-child(even) td { background: #fafbff; }
+        tbody tr { transition: background-color .15s ease; }
+        tbody tr:hover { background: #f0f3ff; }
+        input[type="number"] {
+            width: 100px; padding: 8px 10px; border-radius: 8px;
+            border: 1.5px solid #d5d9e6; outline: none; font-variant-numeric: tabular-nums;
+        }
+        input[type="number"]:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,0.15); transform: translateY(-1px); transition: all .15s ease; }
+        input[type="number"]:out-of-range { border-color: #ef4444; box-shadow: 0 0 0 3px rgba(239,68,68,0.15); }
+
+        .chart-wrap { margin-top: 16px; background: #fff; border: 1px solid #eef0f6; border-radius: 12px; padding: 12px; overflow: hidden; }
+        .chart-wrap.sticky { position: sticky; top: 0; z-index: 20; border-radius: 0 0 12px 12px; box-shadow: 0 6px 18px rgba(31,35,48,0.08); border-top: none; }
+        .chart-wrap.sticky::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 10px; background: linear-gradient(#ffffff, rgba(255,255,255,0)); pointer-events: none; }
+        .chart-title { font-size: 13px; color: #475467; margin: 0 0 8px; }
+        .muted { color: #98a2b3; font-size: 12px; }
+
+        .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(20px); background: #1f2330; color: #fff; padding: 10px 14px; border-radius: 10px; opacity: 0; pointer-events: none; transition: all .25s ease; box-shadow: 0 8px 24px rgba(0,0,0,.2); font-size: 13px; }
+        .toast.show { opacity: 0.96; transform: translateX(-50%) translateY(0); }
+
+        @media (max-width: 640px) {
+            .toolbar { flex-direction: column; align-items: flex-start; gap: 6px; }
+            input[type="number"] { width: 90px; }
+        }
+    </style>
+    <script>
+        // 日期范围：从 2025-11-03 起两个月
+        const START_DATE = new Date('2025-11-03');
+        const END_DATE = (() => { const d = new Date(START_DATE); d.setMonth(d.getMonth() + 2); d.setDate(d.getDate() - 1); return d; })();
+        const PEOPLE = [
+            { key: 'liang', label: '梁君辉', color: '#6366f1' },
+            { key: 'teng',  label: '滕浠顺', color: '#22c55e' },
+            { key: 'qiao',  label: '李乔', color: '#ef4444' },
+        ];
+
+        const weekdays = ['日','一','二','三','四','五','六'];
+
+        function fmtDate(d) {
+            const y = d.getFullYear();
+            const m = String(d.getMonth()+1).padStart(2,'0');
+            const da = String(d.getDate()).padStart(2,'0');
+            return `${y}-${m}-${da}`;
+        }
+
+        function dateRange(start, end) {
+            const list = []; const cur = new Date(start);
+            while (cur <= end) { list.push(new Date(cur)); cur.setDate(cur.getDate() + 1); }
+            return list;
+        }
+
+        function storageKey(personKey) { return `weightRecords_${personKey}_${fmtDate(START_DATE)}_${fmtDate(END_DATE)}`; }
+
+        function loadData(personKey) {
+            try { return JSON.parse(localStorage.getItem(storageKey(personKey)) || '{}'); } catch { return {}; }
+        }
+
+        function saveData(personKey, data) {
+            localStorage.setItem(storageKey(personKey), JSON.stringify(data));
+        }
+
+        function buildTable(person) {
+            const dates = dateRange(START_DATE, END_DATE);
+            const data = loadData(person.key);
+            const tbody = document.createElement('tbody');
+
+            dates.forEach(d => {
+                const dateStr = fmtDate(d);
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${dateStr}</td>
+                    <td>${weekdays[d.getDay()]}</td>
+                    <td>
+                        <input type="number" step="0.1" min="60" max="100"
+                               data-person="${person.key}" data-date="${dateStr}" value="${data[dateStr] ?? ''}" />
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+            return tbody;
+        }
+
+        function buildSection(person) {
+            const section = document.createElement('div');
+            section.className = 'section';
+
+            const toolbar = document.createElement('div');
+            toolbar.className = 'toolbar';
+            toolbar.innerHTML = `
+                <div class="range">日期范围：${fmtDate(START_DATE)} 至 ${fmtDate(END_DATE)}（共 ${dateRange(START_DATE, END_DATE).length} 天）</div>
+                <span class="muted">单位：kg（小数一位），有效范围：60–100</span>
+                <span style="flex:1"></span>
+                <button type="button" data-action="clear" data-person="${person.key}">清空本页记录</button>
+                <button type="button" data-action="export" data-person="${person.key}">导出CSV</button>
+            `;
+
+            const table = document.createElement('table');
+            table.innerHTML = `
+                <thead>
+                    <tr>
+                        <th>日期</th>
+                        <th>星期</th>
+                        <th>${person.label}（kg）</th>
+                    </tr>
+                </thead>
+            `;
+            table.appendChild(buildTable(person));
+
+            const chartWrap = document.createElement('div');
+            chartWrap.className = 'chart-wrap sticky';
+            chartWrap.innerHTML = `
+                <div class="chart-title">${person.label} 的体重趋势</div>
+                <canvas id="chart_${person.key}" height="180"></canvas>
+                <div class="muted">提示：留空表示未记录，曲线会自动跳过。</div>
+            `;
+
+            section.appendChild(toolbar);
+            section.appendChild(chartWrap);
+            section.appendChild(table);
+            return section;
+        }
+
+        function gatherSeries(personKey) {
+            const inputs = Array.from(document.querySelectorAll(`input[data-person="${personKey}"]`));
+            inputs.sort((a,b) => a.dataset.date.localeCompare(b.dataset.date));
+            const labels = inputs.map(i => i.dataset.date);
+            const values = inputs.map(i => i.value === '' ? null : Number(i.value));
+            return { labels, values };
+        }
+
+        // 轻量原生 Canvas 折线图
+        const charts = {};
+        function renderChart(person, animate = false) {
+            const canvas = document.getElementById(`chart_${person.key}`);
+            if (!canvas) return;
+            const DPR = Math.min(window.devicePixelRatio || 1, 2);
+            const parentWidth = canvas.parentElement.clientWidth - 24;
+            const displayW = Math.max(480, parentWidth);
+            const displayH = 180;
+            canvas.style.width = displayW + 'px';
+            canvas.style.height = displayH + 'px';
+            canvas.width = Math.floor(displayW * DPR);
+            canvas.height = Math.floor(displayH * DPR);
+            const ctx = canvas.getContext('2d');
+            ctx.scale(DPR, DPR);
+
+            const { labels, values } = gatherSeries(person.key);
+            const padding = { left: 40, right: 10, top: 10, bottom: 26 };
+            const W = displayW - padding.left - padding.right;
+            const H = displayH - padding.top - padding.bottom;
+
+            // 过滤非空取 min/max
+            const nums = values.filter(v => v != null);
+            let minY = Math.min(...nums);
+            let maxY = Math.max(...nums);
+            if (!isFinite(minY) || !isFinite(maxY)) { minY = 40; maxY = 100; }
+            if (minY === maxY) { minY -= 1; maxY += 1; }
+            const margin = (maxY - minY) * 0.08;
+            minY -= margin; maxY += margin;
+
+            // 横坐标位置仅由日期数量决定，与是否有数据无关，避免清空后全部重叠在一起
+            function xAt(i) { return padding.left + i * (W / ((labels.length - 1) || 1)); }
+            function yAt(v) { return padding.top + (H - (v - minY) / (maxY - minY) * H); }
+
+            // 背景
+            ctx.clearRect(0, 0, displayW, displayH);
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, displayW, displayH);
+
+            // 网格与坐标（Y 轴）
+            ctx.strokeStyle = '#eef0f6';
+            ctx.lineWidth = 1;
+            const gridLines = 4;
+            for (let i = 0; i <= gridLines; i++) {
+                const y = padding.top + (H / gridLines) * i;
+                ctx.beginPath(); ctx.moveTo(padding.left, y); ctx.lineTo(displayW - padding.right, y); ctx.stroke();
+                const val = (maxY - (maxY - minY) * (i / gridLines)).toFixed(0);
+                ctx.fillStyle = '#98a2b3'; ctx.font = '12px system-ui';
+                ctx.fillText(val, 6, y + 4);
+            }
+
+            // X 轴：从 11-03 开始每 7 天一个刻度与标签
+            const step = 7;
+            const axisY = displayH - padding.bottom + 6;
+            ctx.fillStyle = '#98a2b3'; ctx.font = '12px system-ui';
+            ctx.strokeStyle = '#e5e7ef';
+            for (let i = 0; i < labels.length; i += step) {
+                const x = xAt(i);
+                // 刻度
+                ctx.beginPath(); ctx.moveTo(x, displayH - padding.bottom); ctx.lineTo(x, displayH - padding.bottom + 4); ctx.stroke();
+                // 标签（MM-DD）
+                const label = labels[i].slice(5); // 11-03
+                const textW = ctx.measureText(label).width;
+                ctx.fillText(label, x - textW/2, axisY + 12);
+            }
+
+            // 折线（无动画稳定绘制，自动跳过空值段）
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = person.color;
+            ctx.fillStyle = person.color + '22';
+
+            let prevValid = null;
+            ctx.beginPath();
+            labels.forEach((d, i) => {
+                const v = values[i];
+                if (v == null) { prevValid = null; return; }
+                const x = xAt(i); const y = yAt(v);
+                if (prevValid == null) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+                prevValid = [x, y];
+            });
+            ctx.stroke();
+
+            // 悬浮高亮（仅绘制圆点，不重启动画）
+            canvas.onmousemove = (e) => {
+                const rect = canvas.getBoundingClientRect();
+                const relX = (e.clientX - rect.left) * (displayW / rect.width);
+                const idxFloat = (relX - padding.left) / (W / (labels.length - 1 || 1));
+                const idx = Math.max(0, Math.min(labels.length - 1, Math.round(idxFloat)));
+                const v = values[idx];
+                // 先重绘基础曲线
+                renderChart(person, false);
+                if (v == null) return;
+                const cx = xAt(idx); const cy = yAt(v);
+                ctx.fillStyle = '#fff';
+                ctx.strokeStyle = person.color;
+                ctx.lineWidth = 2;
+                ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+            };
+            canvas.onmouseleave = () => renderChart(person, false);
+        }
+
+        // 简易防抖
+        function debounce(fn, wait){ let t; return (...args)=>{ clearTimeout(t); t=setTimeout(()=>fn(...args), wait); }; }
+
+        function attachEvents() {
+            const onInput = debounce((target) => {
+                const personKey = target.dataset.person;
+                const date = target.dataset.date;
+                // 校验范围：60–100kg
+                if (!target.checkValidity()) {
+                    if (typeof target.reportValidity === 'function') target.reportValidity();
+                    toast('请输入 60–100 kg');
+                    return;
+                }
+                const data = loadData(personKey);
+                if (target.value === '') delete data[date]; else data[date] = target.value;
+                saveData(personKey, data);
+                if (window.cloudStorage && window.cloudStorage.save) {
+                    window.cloudStorage.save(personKey, data).catch(()=>{});
+                }
+                const person = PEOPLE.find(p => p.key === personKey);
+                renderChart(person);
+                toast('已保存');
+            }, 120);
+
+            document.addEventListener('input', (e) => {
+                if (e.target.matches('input[type="number"][data-person]')) {
+                    onInput(e.target);
+                }
+            });
+
+            // 失焦时若越界则自动夹紧到 [60,100]
+            document.addEventListener('blur', (e) => {
+                if (e.target && e.target.matches('input[type="number"][data-person]')) {
+                    const target = e.target;
+                    if (target.value === '') return;
+                    let v = parseFloat(target.value);
+                    if (Number.isNaN(v)) return;
+                    if (v < 60) v = 60; if (v > 100) v = 100;
+                    if (String(v) !== target.value) {
+                        target.value = v.toFixed(1);
+                        // 触发保存
+                        const evt = new Event('input', { bubbles: true });
+                        target.dispatchEvent(evt);
+                    }
+                }
+            }, true);
+
+            document.addEventListener('click', (e) => {
+                const btn = e.target.closest('button[data-action]');
+                if (!btn) return;
+                const action = btn.dataset.action;
+                const personKey = btn.dataset.person;
+                if (action === 'clear') {
+                    if (confirm('确定清空该页的所有记录吗？此操作不可撤销。')) {
+                        saveData(personKey, {});
+                        document.querySelectorAll(`input[data-person="${personKey}"]`).forEach(i => i.value = '');
+                        const person = PEOPLE.find(p => p.key === personKey);
+                        renderChart(person);
+                        toast('已清空该页记录');
+                        if (window.cloudStorage && window.cloudStorage.save) {
+                            window.cloudStorage.save(personKey, {}).catch(()=>{});
+                        }
+                    }
+                }
+                if (action === 'export') {
+                    exportCSV(personKey);
+                    toast('已导出 CSV');
+                }
+            });
+        }
+
+        function exportCSV(personKey) {
+            const { labels, values } = gatherSeries(personKey);
+            const rows = [['日期','体重(kg)']].concat(labels.map((d,i) => [d, values[i] ?? '']));
+            const csv = rows.map(r => r.join(',')).join('\n');
+            const blob = new Blob(["\ufeff" + csv], { type: 'text/csv;charset=utf-8;' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `${personKey}_${fmtDate(START_DATE)}_${fmtDate(END_DATE)}.csv`;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        }
+
+        function scrollToTodayIfVisible(sectionEl) {
+            const today = new Date();
+            const todayStr = fmtDate(today);
+            const row = sectionEl.querySelector(`input[data-date="${todayStr}"]`);
+            if (row) row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+
+        function toast(msg) {
+            let el = document.querySelector('.toast');
+            if (!el) { el = document.createElement('div'); el.className = 'toast'; document.body.appendChild(el); }
+            el.textContent = msg; el.classList.add('show');
+            clearTimeout(toast._t); toast._t = setTimeout(()=> el.classList.remove('show'), 900);
+        }
+
+        function init() {
+            // 构建 Tabs
+            const tabs = document.getElementById('tabs');
+            const views = document.getElementById('views');
+            PEOPLE.forEach((p, idx) => {
+                const btn = document.createElement('button');
+                btn.className = 'tab-btn' + (idx===0 ? ' active' : '');
+                btn.textContent = p.label;
+                btn.dataset.target = p.key;
+                tabs.appendChild(btn);
+
+                const sec = buildSection(p);
+                sec.id = `section_${p.key}`;
+                if (idx===0) sec.classList.add('active');
+                views.appendChild(sec);
+            });
+
+            tabs.addEventListener('click', (e) => {
+                const btn = e.target.closest('.tab-btn');
+                if (!btn) return;
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                const key = btn.dataset.target;
+                document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+                document.getElementById(`section_${key}`).classList.add('active');
+                const person = PEOPLE.find(p => p.key === key);
+                renderChart(person, false);
+                scrollToTodayIfVisible(document.getElementById(`section_${key}`));
+            });
+
+            attachEvents();
+
+            // 初次渲染所有图表
+            PEOPLE.forEach(p => renderChart(p, false));
+            // 定位到今天（若在范围内）
+            scrollToTodayIfVisible(document.querySelector('.section.active'));
+
+            // 窗口尺寸变化时，重绘当前可见图表
+            window.addEventListener('resize', debounce(() => {
+                const activeBtn = document.querySelector('.tab-btn.active');
+                const key = activeBtn ? activeBtn.dataset.target : PEOPLE[0].key;
+                const person = PEOPLE.find(p => p.key === key);
+                renderChart(person, false);
+            }, 120));
+
+            // Firestore 实时订阅（若已初始化）
+            if (window.cloudStorage && window.cloudStorage.ready) {
+                window.cloudStorage.ready.then(() => {
+                    PEOPLE.forEach(p => {
+                        window.cloudStorage.subscribe(p.key, (remote) => {
+                            // 合并远端数据到本地与界面
+                            saveData(p.key, remote || {});
+                            const inputs = document.querySelectorAll(`input[data-person="${p.key}"]`);
+                            inputs.forEach(input => {
+                                const v = (remote || {})[input.dataset.date] ?? '';
+                                if (input.value !== String(v)) input.value = v;
+                            });
+                            renderChart(p, false);
+                        });
+                    });
+                }).catch(()=>{});
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', init);
+    </script>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="title">体重记录表</div>
+            <div class="sub">记录人员：梁君辉 · 滕浠顺 · 李乔｜开始：2025-11-03｜周期：2 个月</div>
+            <div class="motto">自律让我们每天进步一点点</div>
+        </div>
+        <div class="tabs" id="tabs"></div>
+        <div class="content" id="views"></div>
+    </div>
+    <!-- LeanCloud 国内版（推荐在国内使用） -->
+    <script src="https://cdn1.lncld.net/static/js/3.15.0/av-min.js"></script>
+    <script>
+        // 1) 替换为你的 LeanCloud 国内版应用配置（控制台 → 应用 Keys）
+        const LC_APP_ID = 'Kd6KYR5QvXzVge7ZC2LNNNkk-gzGzoHsz';
+        const LC_APP_KEY = 'QtskBCQBrs2mJ6YDXbRQF7E1';
+        const LC_SERVER_URL = 'https://kd6kyr5q.lc-cn-n1-shared.com'; // 例：https://xxxxx.lc-cn-n1-shared.com
+
+        AV.init({ appId: LC_APP_ID, appKey: LC_APP_KEY, serverURL: LC_SERVER_URL });
+
+        // 2) 匿名登录
+        const ready = AV.User.loginAnonymously().then(() => true).catch((e)=>{ console.warn('LeanCloud login failed', e); return true; });
+
+        function docId(personKey) {
+            const s = window.START_DATE || new Date('2025-11-03');
+            const e = window.END_DATE   || new Date('2026-01-02');
+            const pad = n => String(n).padStart(2,'0');
+            const f = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+            return `${personKey}_${f(s)}_${f(e)}`;
+        }
+
+        const WeightRecord = AV.Object.extend('WeightRecord');
+
+        async function getOrCreateObj(personKey) {
+            const id = docId(personKey);
+            const query = new AV.Query('WeightRecord');
+            query.equalTo('docId', id);
+            const existed = await query.first();
+            if (existed) return existed;
+            const obj = new WeightRecord();
+            obj.set('docId', id);
+            obj.set('personKey', personKey);
+            obj.set('records', {});
+            await obj.save();
+            return obj;
+        }
+
+        async function loadCloud(personKey) {
+            await ready;
+            const id = docId(personKey);
+            const query = new AV.Query('WeightRecord');
+            query.equalTo('docId', id);
+            const obj = await query.first();
+            return obj ? (obj.get('records') || {}) : {};
+        }
+
+        async function saveCloud(personKey, dataObj) {
+            await ready;
+            const obj = await getOrCreateObj(personKey);
+            obj.set('records', dataObj || {});
+            obj.set('updatedAtMs', Date.now());
+            await obj.save();
+        }
+
+        function subscribeCloud(personKey, cb) {
+            // 使用 LiveQuery 订阅对象更新
+            const id = docId(personKey);
+            const query = new AV.Query('WeightRecord');
+            query.equalTo('docId', id);
+            AV.LiveQuery.init(AV); // 自动复用 SDK 内置 LiveQuery 客户端
+            query.subscribe().then(liveQuery => {
+                liveQuery.on('create', (obj) => cb(obj.get('records') || {}));
+                liveQuery.on('update', (obj) => cb(obj.get('records') || {}));
+                liveQuery.on('enter',  (obj) => cb(obj.get('records') || {}));
+            }).catch(err => console.warn('LiveQuery subscribe failed', err));
+        }
+
+        // 暴露与 Firebase 相同的接口，页面其余逻辑无需变更
+        window.cloudStorage = {
+            ready,
+            async load(personKey) { return loadCloud(personKey); },
+            async save(personKey, data) { return saveCloud(personKey, data); },
+            subscribe(personKey, cb) { return subscribeCloud(personKey, cb); }
+        };
+    </script>
+</body>
+</html>
+
+
