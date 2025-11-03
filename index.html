@@ -594,7 +594,18 @@
                             renderChart(p, false);
                             console.log(`✅ ${p.label} 的数据已加载到界面`);
                         } else {
-                            console.log(`⚠️ ${p.label} 没有云端数据`);
+                            console.log(`⚠️ ${p.label} 没有云端数据，清除本地缓存`);
+                            // 云端数据为空，清除本地存储
+                            saveData(p.key, {});
+                            
+                            // 清空界面显示
+                            const inputs = document.querySelectorAll(`input[data-person="${p.key}"]`);
+                            inputs.forEach(input => { 
+                                input.value = '';
+                            });
+                            
+                            renderChart(p, false);
+                            console.log(`✅ ${p.label} 的本地缓存已清除`);
                         }
                     } catch(e) {
                         console.error(`❌ 加载 ${p.label} 的数据失败:`, e);
