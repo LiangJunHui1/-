@@ -940,9 +940,21 @@
                                 
                                 console.log('💾 update 操作结果:', saveResult);
                                 
-                                // update 成功，完成保存
-                                console.log('✅ update 操作成功');
-                                break;
+                                // 根据 V2 行为：updated>0 代表更新成功；否则视为文档不存在，改用 set
+                                if (saveResult && typeof saveResult.updated === 'number') {
+                                    if (saveResult.updated > 0) {
+                                        console.log('✅ update 操作成功');
+                                        break;
+                                    } else {
+                                        console.log('📝 update 返回 updated: 0，文档可能不存在，改用 set 创建');
+                                        useSet = true;
+                                        // 继续到 set 分支
+                                    }
+                                } else {
+                                    // 未返回 updated 字段，保守起见尝试 set
+                                    console.log('ℹ️ update 返回无 updated 字段，改用 set 创建');
+                                    useSet = true;
+                                }
                             } catch(updateError) {
                                 const errorMsg = updateError.message || String(updateError);
                                 console.warn('⚠️ update 失败:', errorMsg);
