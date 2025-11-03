@@ -150,7 +150,7 @@
                 <span style="flex:1"></span>
                 <button type="button" data-action="clear" data-person="${person.key}">清空本页记录</button>
                 <button type="button" data-action="export" data-person="${person.key}">导出CSV</button>
-                <button type="button" data-action="diagnose" style="background:#f0f4ff;color:#6366f1;">诊断同步</button>
+                
             `;
 
             const table = document.createElement('table');
@@ -395,84 +395,42 @@
                 const personKey = btn.dataset.person;
                 if (action === 'clear') {
                     if (confirm('确定清空该页的所有记录吗？此操作不可撤销。')) {
-                        saveData(personKey, {});
-                        // 同步到 CloudBase
-                        if (window.cloudStorage && window.cloudStorage.save) {
-                            window.cloudStorage.save(personKey, {}).then(() => {
-                                console.log('✅ 清空操作已同步到 CloudBase', personKey);
-                            }).catch((e) => {
-                                console.error('❌ 清空同步失败', personKey, e);
-                            });
-                        }
-                        document.querySelectorAll(`input[data-person="${personKey}"]`).forEach(i => i.value = '');
-                        const person = PEOPLE.find(p => p.key === personKey);
-                        renderChart(person);
-                        toast('已清空该页记录');
+                        (async () => {
+                            // 先清空本地
+                            saveData(personKey, {});
+                            document.querySelectorAll(`input[data-person="${personKey}"]`).forEach(i => i.value = '');
+                            const person = PEOPLE.find(p => p.key === personKey);
+                            renderChart(person, false);
+                            
+                            // 再同步到云端并校验
+                            try {
+                                if (window.cloudStorage && window.cloudStorage.save) {
+                                    await window.cloudStorage.save(personKey, {});
+                                    console.log('✅ 清空操作已同步到 CloudBase', personKey);
+                                    // 验证云端是否已为空
+                                    const verify = await window.cloudStorage.load(personKey);
+                                    if (verify && Object.keys(verify).length > 0) {
+                                        console.warn('⚠️ 云端验证仍存在数据，重试清空一次');
+                                        await window.cloudStorage.save(personKey, {});
+                                    }
+                                }
+                                toast('已清空该页记录');
+                            } catch(e2) {
+                                console.error('❌ 清空同步失败', personKey, e2);
+                                toast('云端清空失败，仅本地已清空');
+                            }
+                        })();
                     }
                 }
                 if (action === 'export') {
                     exportCSV(personKey);
                     toast('已导出 CSV');
                 }
-                if (action === 'diagnose') {
-                    diagnoseCloudStorage(personKey);
-                }
+                
             });
         }
 
-        async function diagnoseCloudStorage(personKey) {
-            const id = docId(personKey);
-            const results = [];
-            results.push(`🔍 诊断 ${personKey}`);
-            results.push(`文档ID: ${id}`);
-            results.push(`环境ID: ${window.TCB_ENV_ID || '未设置'}`);
-            results.push(`登录状态: ${window.loginStatus || '未知'}`);
-            if (window.lastError) results.push(`❌ 错误: ${window.lastError}`);
-            
-            if (!window.db) {
-                results.push('❌ CloudBase 未初始化');
-                results.push('请检查：1) SDK 是否加载成功 2) 网络连接是否正常');
-                alert(results.join('\n') + '\n\n详细日志请查看浏览器控制台（F12）');
-                return;
-            }
-            
-            try {
-                await window.ready;
-                results.push('✅ 登录成功');
-                
-                // 测试读取
-                try {
-                    const res = await window.db.collection('WeightRecord').doc(id).get();
-                    results.push(`📖 读取测试: ${res.data && res.data.length > 0 ? '✅ 有数据' : '⚠️ 无数据'}`);
-                } catch(e) {
-                    results.push(`❌ 读取失败: ${e.message}`);
-                    window.lastError = e.message;
-                }
-                
-                // 测试写入
-                try {
-                    await window.db.collection('WeightRecord').doc(id).set({ personKey, records:{'test':'123'}, updatedAtMs: Date.now() });
-                    results.push('✅ 写入测试: 成功');
-                    
-                    // 清理测试数据
-                    setTimeout(async () => {
-                        try {
-                            const current = await window.cloudStorage.load(personKey);
-                            await window.db.collection('WeightRecord').doc(id).set({ personKey, records:current, updatedAtMs: Date.now() });
-                        } catch(e) {}
-                    }, 1000);
-                } catch(e) {
-                    results.push(`❌ 写入失败: ${e.message}`);
-                    window.lastError = e.message;
-                }
-            } catch(e) {
-                results.push(`❌ 登录失败: ${e.message}`);
-                window.lastError = e.message;
-            }
-            
-            alert(results.join('\n') + '\n\n详细日志请查看浏览器控制台（F12）');
-            console.log('诊断结果:', results);
-        }
+        
 
         function exportCSV(personKey) {
             const { labels, values } = gatherSeries(personKey);
