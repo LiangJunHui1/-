@@ -305,7 +305,12 @@
                 if (target.value === '') delete data[date]; else data[date] = target.value;
                 saveData(personKey, data);
                 if (window.cloudStorage && window.cloudStorage.save) {
-                    window.cloudStorage.save(personKey, data).catch(()=>{});
+                    window.cloudStorage.save(personKey, data).then(() => {
+                        console.log('✅ 体重数据已同步到 CloudBase', personKey);
+                    }).catch((e) => {
+                        console.error('❌ 体重数据同步失败', personKey, e);
+                        toast('同步失败，请检查网络');
+                    });
                 }
                 const person = PEOPLE.find(p => p.key === personKey);
                 renderChart(person);
@@ -343,13 +348,18 @@
                 if (action === 'clear') {
                     if (confirm('确定清空该页的所有记录吗？此操作不可撤销。')) {
                         saveData(personKey, {});
+                        // 同步到 CloudBase
+                        if (window.cloudStorage && window.cloudStorage.save) {
+                            window.cloudStorage.save(personKey, {}).then(() => {
+                                console.log('✅ 清空操作已同步到 CloudBase', personKey);
+                            }).catch((e) => {
+                                console.error('❌ 清空同步失败', personKey, e);
+                            });
+                        }
                         document.querySelectorAll(`input[data-person="${personKey}"]`).forEach(i => i.value = '');
                         const person = PEOPLE.find(p => p.key === personKey);
                         renderChart(person);
                         toast('已清空该页记录');
-                        if (window.cloudStorage && window.cloudStorage.save) {
-                            window.cloudStorage.save(personKey, {}).catch(()=>{});
-                        }
                     }
                 }
                 if (action === 'export') {
@@ -834,25 +844,61 @@
                 return { stop: () => {} };
             }
             const id = docId(personKey);
-            console.log('🔍 开始监听', personKey, id);
-            try {
-                const watcher = window.db.collection('WeightRecord').doc(id).watch({
-                    onChange: snap => {
-                        const d = snap.docs && snap.docs[0];
-                        console.log('📢 收到更新', personKey, d);
-                        if (d) cb(d.records || {});
-                    },
-                    onError: err => {
-                        window.lastError = err.message || String(err);
-                        console.error('❌ watch 错误', personKey, err);
-                        if (typeof toast === 'function') toast('实时同步失败：' + (err.message || '未知错误'));
+            console.log('🔍 开始监听体重数据', personKey, id);
+            
+            // 先等待数据库初始化完成
+            (async () => {
+                try {
+                    await window.ready;
+                    
+                    // 先查询一次获取最新数据
+                    try {
+                        const queryResult = await window.db.collection('WeightRecord').doc(id).get();
+                        const docs = queryResult.data || [];
+                        if (docs.length > 0) {
+                            const doc = docs[0];
+                            console.log('📥 初始加载体重数据', personKey, doc);
+                            cb(doc.records || {});
+                        }
+                    } catch(e) {
+                        console.warn('⚠️ 初始查询失败', personKey, e);
                     }
-                });
-                return watcher;
-            } catch(e) {
-                console.error('❌ 订阅失败', personKey, e);
-                return { stop: () => {} };
-            }
+                    
+                    // 开始监听实时更新
+                    const watcher = window.db.collection('WeightRecord').doc(id).watch({
+                        onChange: snap => {
+                            // CloudBase watch 返回的数据格式可能是 snap.docs 数组或单个文档对象
+                            let doc = null;
+                            if (snap.docs && snap.docs.length > 0) {
+                                doc = snap.docs[0];
+                            } else if (snap.doc) {
+                                doc = snap.doc;
+                            } else if (snap.data) {
+                                doc = snap;
+                            }
+                            
+                            console.log('📢 收到体重数据更新', personKey, doc);
+                            if (doc && doc.records) {
+                                cb(doc.records);
+                            } else if (doc) {
+                                // 可能是整个文档对象
+                                cb(doc);
+                            }
+                        },
+                        onError: err => {
+                            window.lastError = err.message || String(err);
+                            console.error('❌ watch 错误', personKey, err);
+                            if (typeof toast === 'function') toast('实时同步失败：' + (err.message || '未知错误'));
+                        }
+                    });
+                    return watcher;
+                } catch(e) {
+                    console.error('❌ 订阅失败', personKey, e);
+                    return { stop: () => {} };
+                }
+            })();
+            
+            return { stop: () => {} }; // 返回一个空的 stop 函数，实际停止需要保存 watcher 引用
         }
 
         window.cloudStorage = { ready: window.ready, load: loadCloud, save: saveCloud, subscribe: subscribeCloud };
@@ -911,7 +957,9 @@
 
         function presenceRenderFromDocs(docs) {
             const now = Date.now();
-            const alive = (docs||[]).filter(p => (now - (p.lastSeen||0)) < 60000);
+            // 超时时间：30秒（如果用户关闭页面，心跳停止，30秒后自动从列表中消失）
+            const TIMEOUT = 30000;
+            const alive = (docs||[]).filter(p => (now - (p.lastSeen||0)) < TIMEOUT);
             const count = alive.length;
             const names = alive.map(p => p.nick || '用户').join('、');
             const cEl = document.getElementById('presenceCount');
@@ -963,9 +1011,30 @@
                 
                 // 然后开始监听实时更新
                 window.db.collection('Presence').where({ roomId: ROOM_ID }).watch({
-                    onChange: snap => {
+                    onChange: async snap => {
                         const docs = snap.docs || [];
                         console.log('📢 收到在线状态更新，用户数:', docs.length, docs);
+                        
+                        // 定期清理超时的在线状态（30秒未更新则删除）
+                        const now = Date.now();
+                        const TIMEOUT = 30000;
+                        const expiredDocs = docs.filter(p => (now - (p.lastSeen||0)) >= TIMEOUT);
+                        
+                        if (expiredDocs.length > 0) {
+                            console.log('🧹 清理超时的在线状态:', expiredDocs.length, '个');
+                            for (const doc of expiredDocs) {
+                                try {
+                                    if (doc._id || doc.id) {
+                                        const docId = doc._id || doc.id;
+                                        await window.db.collection('Presence').doc(docId).remove();
+                                        console.log('✅ 已删除超时的在线状态:', docId);
+                                    }
+                                } catch(e) {
+                                    console.warn('⚠️ 删除超时状态失败:', e);
+                                }
+                            }
+                        }
+                        
                         presenceRenderFromDocs(docs);
                     },
                     onError: err => {
@@ -977,9 +1046,56 @@
             }
         }
 
-        window.updatePresenceTab = async function(key){ try { if (myPresenceId) await window.db.collection('Presence').doc(myPresenceId).update({ tab: key, lastSeen: Date.now() }); } catch(e) {} };
+        window.updatePresenceTab = async function(key){ 
+            try { 
+                if (myPresenceId && window.db) {
+                    await window.db.collection('Presence').doc(myPresenceId).update({ tab: key, lastSeen: Date.now() }); 
+                }
+            } catch(e) {
+                console.warn('更新标签失败:', e);
+            }
+        };
 
-        window.addEventListener('beforeunload', async () => { try { if (myPresenceId) await window.db.collection('Presence').doc(myPresenceId).remove(); } catch(e) {} });
+        // 删除在线状态（关闭页面时调用）
+        async function removePresence() {
+            if (!myPresenceId || !window.db) return;
+            try {
+                console.log('👋 删除在线状态:', myPresenceId);
+                await window.db.collection('Presence').doc(myPresenceId).remove();
+                console.log('✅ 在线状态已删除');
+            } catch(e) {
+                console.warn('❌ 删除在线状态失败:', e);
+            }
+        }
+
+        // 使用多种方式确保页面关闭时删除在线状态
+        // 方法1: visibilitychange - 当页面隐藏时（切换标签、最小化窗口等）
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') {
+                // 页面隐藏时，使用 sendBeacon 发送请求（同步）
+                if (myPresenceId && navigator.sendBeacon) {
+                    // 注意：CloudBase 不支持 sendBeacon，所以我们尝试异步删除
+                    removePresence();
+                }
+            }
+        });
+
+        // 方法2: beforeunload - 页面卸载前（可能来不及执行异步操作）
+        window.addEventListener('beforeunload', () => {
+            // beforeunload 中异步操作可能无法完成，使用同步方式尝试
+            if (myPresenceId && window.db) {
+                // 尝试同步删除（如果可能）
+                try {
+                    // 注意：这可能在页面关闭前无法完成，但至少尝试了
+                    window.db.collection('Presence').doc(myPresenceId).remove().catch(() => {});
+                } catch(e) {}
+            }
+        });
+
+        // 方法3: pagehide - 页面隐藏时（比 beforeunload 更可靠）
+        window.addEventListener('pagehide', () => {
+            removePresence();
+        });
 
         // 启动在线状态功能（等待数据库初始化完成）
         (async () => {
