@@ -855,9 +855,59 @@
                     data: dataToSave
                 });
                 
-                // 保存数据
-                const saveResult = await window.db.collection('WeightRecord').doc(id).set(dataToSave);
-                console.log('💾 保存操作结果:', saveResult);
+                // 保存数据（带重试机制）
+                let saveResult = null;
+                let saveAttempts = 0;
+                const MAX_SAVE_ATTEMPTS = 3;
+                
+                while (saveAttempts < MAX_SAVE_ATTEMPTS) {
+                    try {
+                        saveAttempts++;
+                        console.log(`💾 尝试保存数据 (${saveAttempts}/${MAX_SAVE_ATTEMPTS})...`);
+                        saveResult = await window.db.collection('WeightRecord').doc(id).set(dataToSave);
+                        console.log('💾 保存操作结果:', saveResult);
+                        
+                        // 检查是否有错误
+                        if (saveResult && saveResult.code) {
+                            const errorCode = saveResult.code;
+                            const errorMsg = saveResult.message || '';
+                            
+                            // 如果是数据库请求失败，尝试重试
+                            if (errorCode === 'DATABASE_REQUEST_FAILED' && saveAttempts < MAX_SAVE_ATTEMPTS) {
+                                console.warn(`⚠️ 保存失败 (${errorCode})，${errorMsg}`);
+                                console.log(`🔄 等待 ${saveAttempts * 1000}ms 后重试...`);
+                                await new Promise(resolve => setTimeout(resolve, saveAttempts * 1000));
+                                continue; // 重试
+                            } else {
+                                // 其他错误或重试次数用完
+                                throw new Error(`${errorCode}: ${errorMsg}`);
+                            }
+                        }
+                        
+                        // 保存成功，跳出循环
+                        break;
+                    } catch(e) {
+                        const errorMsg = e.message || String(e);
+                        
+                        // 如果是网络错误或数据库请求失败，尝试重试
+                        if ((errorMsg.includes('DATABASE_REQUEST_FAILED') || 
+                             errorMsg.includes('network') || 
+                             errorMsg.includes('timeout')) && 
+                            saveAttempts < MAX_SAVE_ATTEMPTS) {
+                            console.warn(`⚠️ 保存失败: ${errorMsg}`);
+                            console.log(`🔄 等待 ${saveAttempts * 1000}ms 后重试...`);
+                            await new Promise(resolve => setTimeout(resolve, saveAttempts * 1000));
+                            continue; // 重试
+                        } else {
+                            // 其他错误或重试次数用完，抛出错误
+                            throw e;
+                        }
+                    }
+                }
+                
+                if (!saveResult || (saveResult.code && saveResult.code !== 'SUCCESS')) {
+                    throw new Error(`保存失败: ${saveResult?.message || '未知错误'}`);
+                }
                 
                 // 验证：保存后立即读取验证
                 await new Promise(resolve => setTimeout(resolve, 500)); // 等待 500ms 确保数据写入
@@ -868,13 +918,6 @@
                     const savedData = verifyResult.data[0];
                     console.log('✅ 保存成功并验证通过！', personKey, id);
                     console.log('📊 已保存的数据:', savedData);
-                    console.log('📝 请在 CloudBase 控制台查看数据：');
-                    console.log('   1. 登录 https://console.cloud.tencent.com/tcb');
-                    console.log('   2. 选择环境:', window.TCB_ENV_ID);
-                    console.log('   3. 进入「数据库」→「文档数据库」');
-                    console.log('   4. 查看集合「WeightRecord」');
-                    console.log('   5. 文档 ID:', id);
-                    console.log('   6. 如果看不到数据，请检查集合权限设置');
                 } else {
                     console.warn('⚠️ 保存成功但验证读取失败，可能的原因：');
                     console.warn('   1. 集合权限不允许匿名用户读取');
@@ -885,7 +928,19 @@
             } catch(e) {
                 window.lastError = e.message || String(e);
                 console.error('❌ 保存失败', personKey, e);
-                if (typeof toast === 'function') toast('保存失败：' + (e.message || '未知错误'));
+                
+                // 提供更详细的错误信息
+                let errorMsg = e.message || String(e);
+                if (errorMsg.includes('DATABASE_REQUEST_FAILED')) {
+                    errorMsg = '数据库请求失败，可能是网络问题或权限问题。请检查：\n1. 网络连接\n2. CloudBase 控制台的权限设置\n3. 集合是否已创建';
+                } else if (errorMsg.includes('network') || errorMsg.includes('timeout')) {
+                    errorMsg = '网络连接失败，请检查网络后重试';
+                }
+                
+                if (typeof toast === 'function') {
+                    toast('保存失败：' + errorMsg);
+                }
+                throw e; // 重新抛出错误，让调用者知道保存失败
             }
         }
 
