@@ -1318,7 +1318,7 @@
                     } catch(e) {
                         console.warn('心跳更新失败:', e);
                     }
-                }, 20000);
+                }, 15000);
             } catch(e) {
                 console.error('❌ 设置在线状态失败:', e);
             }
@@ -1326,9 +1326,8 @@
 
         function presenceRenderFromDocs(docs) {
             const now = Date.now();
-            // 超时时间：5分钟（300秒）- 允许用户切换标签页一段时间后仍保持在线状态
-            // 如果用户真正关闭页面，心跳停止，5分钟后自动从列表中消失
-            const TIMEOUT = 300000;
+            // 超时时间：60 秒 - 移动端退出后更快标记为离线
+            const TIMEOUT = 60000;
             const alive = (docs||[]).filter(p => (now - (p.lastSeen||0)) < TIMEOUT);
             const count = alive.length;
             const names = alive.map(p => p.nick || '用户').join('、');
@@ -1414,9 +1413,9 @@
                                 const docs = snap.docs || [];
                                 console.log('📢 收到在线状态更新，用户数:', docs.length, docs);
                                 
-                                // 定期清理超时的在线状态（5分钟未更新则删除）
+                                // 定期清理超时的在线状态（60 秒未更新则删除）
                                 const now = Date.now();
-                                const TIMEOUT = 300000;
+                                const TIMEOUT = 60000;
                                 const expiredDocs = docs.filter(p => (now - (p.lastSeen||0)) >= TIMEOUT);
                                 
                                 if (expiredDocs.length > 0) {
