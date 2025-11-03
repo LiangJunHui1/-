@@ -903,31 +903,20 @@
                     data: dataToSave
                 });
                 
-                // 保存数据（带重试机制）- 智能选择 set 或 update
+                // 保存数据（带重试机制）- 根据 CloudBase 文档使用 update 和 set
                 let saveResult = null;
                 let saveAttempts = 0;
                 const MAX_SAVE_ATTEMPTS = 3;
-                let documentExists = false;
-                
-                // 先检查文档是否存在
-                try {
-                    const checkDoc = await window.db.collection('WeightRecord').doc(id).get();
-                    documentExists = checkDoc && checkDoc.data && checkDoc.data.length > 0;
-                    console.log(`🔍 文档是否存在: ${documentExists ? '是' : '否'}`);
-                } catch(e) {
-                    console.log('🔍 检查文档存在性失败，假设不存在:', e.message);
-                    documentExists = false;
-                }
+                let useSet = false; // 是否使用 set 方法
                 
                 while (saveAttempts < MAX_SAVE_ATTEMPTS) {
                     try {
                         saveAttempts++;
                         
-                        // 如果文档已存在，先尝试使用 update 更新 records 字段
-                        if (documentExists && saveAttempts === 1) {
-                            console.log(`💾 尝试保存数据 (${saveAttempts}/${MAX_SAVE_ATTEMPTS})，使用 update 方法更新 records 字段...`);
+                        if (!useSet) {
+                            // 优先尝试 update 方法（如果文档存在，update 不会有重复键错误）
+                            console.log(`💾 尝试保存数据 (${saveAttempts}/${MAX_SAVE_ATTEMPTS})，使用 update 方法...`);
                             try {
-                                // 只更新 records 和 updatedAtMs 字段
                                 saveResult = await window.db.collection('WeightRecord').doc(id).update({
                                     records: dataToSave.records,
                                     updatedAtMs: dataToSave.updatedAtMs
@@ -939,17 +928,42 @@
                                     console.log(`✅ update 成功，更新了 ${saveResult.updated} 条记录`);
                                     break;
                                 }
-                                // 如果 updated: 0，继续尝试其他方法
-                                console.warn('⚠️ update 返回 updated: 0，尝试使用 set 方法');
+                                
+                                // 如果 updated: 0，说明文档不存在，改用 set 方法
+                                if (saveResult && saveResult.updated === 0) {
+                                    console.log('📝 update 返回 updated: 0，文档不存在，改用 set 方法创建');
+                                    useSet = true;
+                                    // 继续到 set 逻辑
+                                } else {
+                                    // 其他情况，继续重试 update
+                                    if (saveAttempts < MAX_SAVE_ATTEMPTS) {
+                                        await new Promise(resolve => setTimeout(resolve, 1000));
+                                        continue;
+                                    }
+                                }
                             } catch(updateError) {
-                                console.warn('⚠️ update 失败，尝试使用 set 方法:', updateError.message);
-                                // update 失败，继续尝试 set
+                                const errorMsg = updateError.message || String(updateError);
+                                console.warn('⚠️ update 失败:', errorMsg);
+                                
+                                // 如果错误是文档不存在，改用 set
+                                if (errorMsg.includes('not found') || errorMsg.includes('不存在') || errorMsg.includes('does not exist')) {
+                                    console.log('📝 文档不存在，改用 set 方法');
+                                    useSet = true;
+                                } else {
+                                    // 其他错误，重试 update
+                                    if (saveAttempts < MAX_SAVE_ATTEMPTS) {
+                                        await new Promise(resolve => setTimeout(resolve, 1000));
+                                        continue;
+                                    }
+                                }
                             }
                         }
                         
-                        // 使用 set 方法（如果文档不存在，或者 update 失败）
-                        console.log(`💾 尝试保存数据 (${saveAttempts}/${MAX_SAVE_ATTEMPTS})，使用 set 方法...`);
-                        saveResult = await window.db.collection('WeightRecord').doc(id).set(dataToSave);
+                        // 使用 set 方法（文档不存在，或 update 返回 updated: 0）
+                        if (useSet) {
+                            console.log(`💾 尝试保存数据 (${saveAttempts}/${MAX_SAVE_ATTEMPTS})，使用 set 方法...`);
+                            saveResult = await window.db.collection('WeightRecord').doc(id).set(dataToSave);
+                        }
                         
                         console.log('💾 保存操作结果:', saveResult);
                         
@@ -978,31 +992,33 @@
                                 const errorCode = saveResult.code;
                                 const errorMsg = saveResult.message || '';
                                 
-                                // 如果是重复键错误，先删除文档再创建
+                                // 如果是重复键错误，说明文档存在，应该使用 update 而不是 set
                                 if (errorMsg.includes('duplicate key') || errorMsg.includes('E11000')) {
-                                    console.log('🔄 检测到重复键错误，先删除文档再创建...');
+                                    console.log('🔄 检测到重复键错误，说明文档存在，改用 update 方法...');
+                                    useSet = false; // 切换到 update 方法
                                     try {
-                                        await window.db.collection('WeightRecord').doc(id).remove();
-                                        console.log('✅ 文档已删除，重新创建...');
-                                        // 标记文档不存在，下次循环会使用 set 创建
-                                        documentExists = false;
-                                        // 继续下一次循环尝试保存
-                                        await new Promise(resolve => setTimeout(resolve, 500));
-                                        continue;
-                                    } catch(deleteError) {
-                                        console.warn('⚠️ 删除文档失败:', deleteError.message);
-                                        // 如果删除失败，尝试使用 update
-                                        try {
-                                            saveResult = await window.db.collection('WeightRecord').doc(id).update({
-                                                records: dataToSave.records,
-                                                updatedAtMs: dataToSave.updatedAtMs
-                                            });
-                                            if (saveResult && saveResult.updated > 0) {
-                                                console.log('✅ 使用 update 成功');
-                                                break;
+                                        // 使用 update 更新字段
+                                        saveResult = await window.db.collection('WeightRecord').doc(id).update({
+                                            records: dataToSave.records,
+                                            updatedAtMs: dataToSave.updatedAtMs
+                                        });
+                                        console.log('💾 update 操作结果:', saveResult);
+                                        
+                                        if (saveResult && saveResult.updated > 0) {
+                                            console.log(`✅ 使用 update 成功，更新了 ${saveResult.updated} 条记录`);
+                                            break;
+                                        } else {
+                                            console.warn('⚠️ update 返回 updated: 0，继续重试...');
+                                            if (saveAttempts < MAX_SAVE_ATTEMPTS) {
+                                                await new Promise(resolve => setTimeout(resolve, 1000));
+                                                continue;
                                             }
-                                        } catch(updateError) {
-                                            console.warn('⚠️ update 也失败:', updateError.message);
+                                        }
+                                    } catch(updateError) {
+                                        console.warn('⚠️ update 也失败:', updateError.message);
+                                        if (saveAttempts < MAX_SAVE_ATTEMPTS) {
+                                            await new Promise(resolve => setTimeout(resolve, 1000));
+                                            continue;
                                         }
                                     }
                                 }
@@ -1046,35 +1062,34 @@
                     } catch(e) {
                         const errorMsg = e.message || String(e);
                         
-                        // 如果是重复键错误，先删除文档再创建
+                        // 如果是重复键错误，说明文档存在，应该使用 update 而不是 set
                         if (errorMsg.includes('duplicate key') || errorMsg.includes('E11000')) {
-                            console.log('🔄 检测到重复键错误（在 catch 中），先删除文档再创建...');
+                            console.log('🔄 检测到重复键错误（在 catch 中），说明文档存在，改用 update 方法...');
+                            useSet = false; // 切换到 update 方法
                             try {
-                                await window.db.collection('WeightRecord').doc(id).remove();
-                                console.log('✅ 文档已删除，重新创建...');
-                                documentExists = false;
-                                await new Promise(resolve => setTimeout(resolve, 500));
-                                continue;
-                            } catch(deleteError) {
-                                console.warn('⚠️ 删除文档失败:', deleteError.message);
-                                // 如果删除失败，尝试使用 update
-                                try {
-                                    saveResult = await window.db.collection('WeightRecord').doc(id).update({
-                                        records: dataToSave.records,
-                                        updatedAtMs: dataToSave.updatedAtMs
-                                    });
-                                    if (saveResult && saveResult.updated > 0) {
-                                        console.log('✅ 使用 update 成功');
-                                        break;
+                                // 使用 update 更新字段
+                                saveResult = await window.db.collection('WeightRecord').doc(id).update({
+                                    records: dataToSave.records,
+                                    updatedAtMs: dataToSave.updatedAtMs
+                                });
+                                console.log('💾 update 操作结果:', saveResult);
+                                
+                                if (saveResult && saveResult.updated > 0) {
+                                    console.log(`✅ 使用 update 成功，更新了 ${saveResult.updated} 条记录`);
+                                    break;
+                                } else {
+                                    console.warn('⚠️ update 返回 updated: 0，继续重试...');
+                                    if (saveAttempts < MAX_SAVE_ATTEMPTS) {
+                                        await new Promise(resolve => setTimeout(resolve, 1000));
+                                        continue;
                                     }
-                                } catch(updateError) {
-                                    console.warn('⚠️ update 也失败:', updateError.message);
                                 }
-                            }
-                            // 如果删除或更新都失败，继续重试
-                            if (saveAttempts < MAX_SAVE_ATTEMPTS) {
-                                await new Promise(resolve => setTimeout(resolve, 1000));
-                                continue;
+                            } catch(updateError) {
+                                console.warn('⚠️ update 也失败:', updateError.message);
+                                if (saveAttempts < MAX_SAVE_ATTEMPTS) {
+                                    await new Promise(resolve => setTimeout(resolve, 1000));
+                                    continue;
+                                }
                             }
                         }
                         
