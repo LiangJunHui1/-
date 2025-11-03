@@ -344,7 +344,20 @@
                 
                 // 保存到云端（带数据合并，避免覆盖其他设备的数据）
                 // 仅在为空或数值合法范围内时才同步到云端；输入过程中的越界值不触发云端写入
-                if ((isEmpty || inRange) && window.cloudStorage && window.cloudStorage.save) {
+                if (isEmpty && window.db) {
+                    // 单日删除：使用字段级删除，避免并发回流导致还原
+                    (async () => {
+                        try {
+                            await deleteDateCloud(personKey, date);
+                            console.log('✅ 单日删除已同步到云端', personKey, date);
+                            const person = PEOPLE.find(p => p.key === personKey);
+                            renderChart(person, false);
+                        } catch (eDel) {
+                            console.error('❌ 单日删除云端同步失败', eDel);
+                            toast('云端删除失败，仅本地已删除');
+                        }
+                    })();
+                } else if ((isEmpty || inRange) && window.cloudStorage && window.cloudStorage.save) {
                     (async () => {
                         try {
                             let mergedData = localData;
@@ -923,6 +936,36 @@
             }
         }
 
+        // 删除云端某一天的字段（使用 V2 指令删除 records.DATE 键）
+        async function deleteDateCloud(personKey, dateStr) {
+            try {
+                if (!window.db) throw new Error('DB 未初始化');
+                await window.ready;
+                const id = docId(personKey);
+                const _ = window.db.command;
+                // 优先使用字段级删除，避免并发回流
+                const fieldPath = `records.${dateStr}`;
+                console.log('🗑️ 删除云端单日字段:', { id, fieldPath });
+                const res = await window.db.collection('WeightRecord')
+                    .doc(id)
+                    .update({ [fieldPath]: _.remove(), updatedAtMs: Date.now() });
+                console.log('🗑️ 字段删除结果:', res);
+                return true;
+            } catch (e) {
+                console.warn('⚠️ 字段级删除失败，退回整对象覆盖方案:', e.message || e);
+                // 退回整对象：读→删键→set
+                try {
+                    const current = await loadCloud(personKey);
+                    if (current && typeof current === 'object') delete current[dateStr];
+                    await saveCloud(personKey, current || {});
+                    return true;
+                } catch (e2) {
+                    console.error('❌ 退回整对象覆盖也失败:', e2.message || e2);
+                    throw e2;
+                }
+            }
+        }
+
         async function saveCloud(personKey, dataObj) {
             try {
                 // 等待 CloudBase 初始化完成
@@ -1330,7 +1373,7 @@
             return { stop: () => {} }; // 返回一个空的 stop 函数，实际停止需要保存 watcher 引用
         }
 
-        window.cloudStorage = { ready: window.ready, load: loadCloud, save: saveCloud, subscribe: subscribeCloud };
+        window.cloudStorage = { ready: window.ready, load: loadCloud, save: saveCloud, subscribe: subscribeCloud, deleteDate: deleteDateCloud };
 
         // ===== 在线状态（Presence） =====
         const ROOM_ID = (() => {
