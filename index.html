@@ -309,18 +309,24 @@
             const onInput = debounce((target) => {
                 const personKey = target.dataset.person;
                 const date = target.dataset.date;
-                // 校验范围：60–100kg
-                if (!target.checkValidity()) {
-                    if (typeof target.reportValidity === 'function') target.reportValidity();
-                    toast('请输入 60–100 kg');
-                    return;
-                }
+                const raw = String(target.value || '').trim();
+                const num = parseFloat(raw);
+                const isEmpty = raw === '';
+                const isNumber = !Number.isNaN(num);
+                const inRange = isNumber && num >= 60 && num <= 100;
+                
+                // 本地数据始终先更新，确保输入不会被回写覆盖
                 const localData = loadData(personKey);
-                if (target.value === '') delete localData[date]; else localData[date] = target.value;
+                if (isEmpty) {
+                    delete localData[date];
+                } else {
+                    localData[date] = raw; // 暂存原始值（可能暂时越界）
+                }
                 saveData(personKey, localData);
                 
                 // 保存到云端（带数据合并，避免覆盖其他设备的数据）
-                if (window.cloudStorage && window.cloudStorage.save) {
+                // 仅在为空或数值合法范围内时才同步到云端；输入过程中的越界值不触发云端写入
+                if ((isEmpty || inRange) && window.cloudStorage && window.cloudStorage.save) {
                     (async () => {
                         try {
                             let mergedData = localData;
@@ -379,7 +385,8 @@
                     const person = PEOPLE.find(p => p.key === personKey);
                     renderChart(person);
                 }
-                toast('已保存');
+                // 仅在合法保存到云端或清空时提示已保存；越界输入过程不提示
+                if (isEmpty || inRange) toast('已保存');
             }, 120);
 
             document.addEventListener('input', (e) => {
