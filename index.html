@@ -855,22 +855,51 @@
                     data: dataToSave
                 });
                 
-                // 保存数据（带重试机制）
+                // 保存数据（带重试机制和重复键错误处理）
                 let saveResult = null;
                 let saveAttempts = 0;
                 const MAX_SAVE_ATTEMPTS = 3;
+                let useUpdate = false; // 是否使用 update 方法
+                
+                // 先尝试获取现有文档，判断应该用 set 还是 update
+                try {
+                    const existingDoc = await window.db.collection('WeightRecord').doc(id).get();
+                    if (existingDoc && existingDoc.data && existingDoc.data.length > 0) {
+                        useUpdate = true;
+                        console.log('📝 文档已存在，使用 update 方法更新');
+                    }
+                } catch(e) {
+                    // 如果查询失败，继续尝试 set
+                    console.log('📝 文档可能不存在，使用 set 方法创建');
+                }
                 
                 while (saveAttempts < MAX_SAVE_ATTEMPTS) {
                     try {
                         saveAttempts++;
-                        console.log(`💾 尝试保存数据 (${saveAttempts}/${MAX_SAVE_ATTEMPTS})...`);
-                        saveResult = await window.db.collection('WeightRecord').doc(id).set(dataToSave);
+                        console.log(`💾 尝试保存数据 (${saveAttempts}/${MAX_SAVE_ATTEMPTS})，方法: ${useUpdate ? 'update' : 'set'}...`);
+                        
+                        // 根据情况选择 set 或 update
+                        if (useUpdate) {
+                            saveResult = await window.db.collection('WeightRecord').doc(id).update(dataToSave);
+                        } else {
+                            saveResult = await window.db.collection('WeightRecord').doc(id).set(dataToSave);
+                        }
+                        
                         console.log('💾 保存操作结果:', saveResult);
                         
                         // 检查是否有错误
                         if (saveResult && saveResult.code) {
                             const errorCode = saveResult.code;
                             const errorMsg = saveResult.message || '';
+                            
+                            // 如果是重复键错误，改用 update 方法
+                            if (errorMsg.includes('duplicate key') || errorMsg.includes('E11000')) {
+                                if (!useUpdate && saveAttempts < MAX_SAVE_ATTEMPTS) {
+                                    console.log('🔄 检测到重复键错误，改用 update 方法重试');
+                                    useUpdate = true;
+                                    continue; // 使用 update 重试
+                                }
+                            }
                             
                             // 如果是数据库请求失败，尝试重试
                             if (errorCode === 'DATABASE_REQUEST_FAILED' && saveAttempts < MAX_SAVE_ATTEMPTS) {
@@ -888,6 +917,13 @@
                         break;
                     } catch(e) {
                         const errorMsg = e.message || String(e);
+                        
+                        // 如果是重复键错误，改用 update 方法
+                        if ((errorMsg.includes('duplicate key') || errorMsg.includes('E11000')) && !useUpdate) {
+                            console.log('🔄 检测到重复键错误，改用 update 方法重试');
+                            useUpdate = true;
+                            continue; // 使用 update 重试
+                        }
                         
                         // 如果是网络错误或数据库请求失败，尝试重试
                         if ((errorMsg.includes('DATABASE_REQUEST_FAILED') || 
