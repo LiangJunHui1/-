@@ -1014,7 +1014,7 @@
                     
                     const startPolling = () => {
                         if (pollTimer) return; // 已在轮询中
-                        console.log(`🔄 使用轮询方案更新体重数据 ${personKey}（每 5 秒）`);
+                        console.log(`🔄 使用轮询方案更新体重数据 ${personKey}（每 10 秒）`);
                         pollTimer = setInterval(async () => {
                             try {
                                 const queryResult = await window.db.collection('WeightRecord').doc(id).get();
@@ -1031,7 +1031,7 @@
                             } catch(e) {
                                 console.warn('⚠️ 轮询失败', personKey, e);
                             }
-                        }, 5000);
+                        }, 10000); // 10秒轮询间隔，与全局轮询错开
                     };
                     
                     const stopPolling = () => {
@@ -1044,8 +1044,9 @@
                     const tryWatch = () => {
                         try {
                             watchWatcher = window.db.collection('WeightRecord').doc(id).watch({
-                                onChange: snap => {
-                                    stopPolling(); // watch 成功，停止轮询
+                                onChange: async snap => {
+                                    // watch 成功，但不停止轮询，保持双保险
+                                    // 只在确认 watch 稳定工作一段时间后才考虑停止轮询
                                     // CloudBase watch 返回的数据格式可能是 snap.docs 数组或单个文档对象
                                     let doc = null;
                                     if (snap.docs && snap.docs.length > 0) {
@@ -1067,7 +1068,7 @@
                                 },
                                 onError: err => {
                                     window.lastError = err.message || String(err);
-                                    console.warn('⚠️ 体重数据 watch 错误, 切换到轮询方案:', personKey, err.message || err);
+                                    console.warn('⚠️ 体重数据 watch 错误, 启动轮询方案:', personKey, err.message || err);
                                     watchRetries++;
                                     
                                     // 停止 watch
@@ -1078,16 +1079,18 @@
                                     }
                                     watchWatcher = null;
                                     
-                                    // 如果重试次数过多，切换到轮询
-                                    if (watchRetries >= MAX_WATCH_RETRIES) {
-                                        console.log(`🔄 体重数据 watch 重试次数过多，切换到轮询方案: ${personKey}`);
-                                        startPolling();
-                                    } else {
+                                    // 立即启动轮询作为备用
+                                    startPolling();
+                                    
+                                    // 如果重试次数未过多，尝试重新连接 watch
+                                    if (watchRetries < MAX_WATCH_RETRIES) {
                                         // 延迟后重试 watch
                                         setTimeout(() => {
                                             console.log(`🔄 重试体重数据 watch (${watchRetries}/${MAX_WATCH_RETRIES})... ${personKey}`);
                                             tryWatch();
                                         }, 2000);
+                                    } else {
+                                        console.log(`🔄 体重数据 watch 重试次数过多，仅使用轮询方案: ${personKey}`);
                                     }
                                 }
                             });
@@ -1107,16 +1110,28 @@
                         }
                     };
                     
-                    // 尝试启动 watch
+                    // 始终启动轮询作为基础保障（即使 watch 成功，轮询也作为备用）
+                    // 轮询间隔较长（15秒），不会造成太大负担
+                    startPolling();
+                    
+                    // 尝试启动 watch（作为实时更新的补充）
                     tryWatch();
                     
-                    // 如果 watch 在 10 秒内未成功，启动轮询作为备用
+                    // 如果 watch 在 10 秒内未成功，确保轮询在运行
                     setTimeout(() => {
                         if (!watchWatcher && !pollTimer) {
-                            console.log(`🔄 体重数据 watch 连接超时，启动轮询方案: ${personKey}`);
+                            console.log(`🔄 体重数据 watch 连接超时，确保轮询方案运行: ${personKey}`);
                             startPolling();
                         }
                     }, 10000);
+                    
+                    // 定期检查轮询是否在运行（每30秒检查一次）
+                    setInterval(() => {
+                        if (!pollTimer && !watchWatcher) {
+                            console.log(`🔄 检测到轮询和 watch 都未运行，重新启动轮询: ${personKey}`);
+                            startPolling();
+                        }
+                    }, 30000);
                     
                     return watchWatcher || { stop: () => { stopPolling(); } };
                 } catch(e) {
