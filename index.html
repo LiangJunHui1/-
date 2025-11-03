@@ -580,16 +580,25 @@
         // CloudBase 初始化（确保 SDK 加载完成）
         function initCloudBase() {
             if (typeof tcb === 'undefined') {
-                console.error('❌ CloudBase SDK 未加载');
+                console.error('❌ CloudBase SDK 未加载，可能原因：1) 网络问题 2) CDN 访问受限');
                 window.loginStatus = 'failed';
                 window.lastError = 'SDK 加载失败，请检查网络或 CDN';
+                // 延迟重试
+                setTimeout(() => {
+                    if (typeof tcb !== 'undefined') {
+                        console.log('🔄 SDK 延迟加载成功，重新初始化');
+                        initCloudBase();
+                    }
+                }, 2000);
                 return;
             }
             
             try {
+                console.log('🚀 初始化 CloudBase...', window.TCB_ENV_ID);
                 window.app = tcb.init({ env: window.TCB_ENV_ID, region: window.TCB_REGION });
                 window.auth = window.app.auth({ persistence: 'local' });
                 window.db = window.app.database();
+                console.log('✅ CloudBase 初始化完成，db 已设置');
 
                 // 匿名登录（带诊断）
                 window.ready = (async () => {
@@ -617,7 +626,10 @@
 
         // 兼容：如果 SDK 已经加载完成
         if (typeof tcb !== 'undefined') {
+            console.log('📦 SDK 已加载，立即初始化');
             initCloudBase();
+        } else {
+            console.log('⏳ 等待 SDK 加载...');
         }
 
         function docId(personKey) {
@@ -629,15 +641,45 @@
         }
 
         async function loadCloud(personKey) {
-            await window.ready;
-            const id = docId(personKey);
-            const res = await window.db.collection('WeightRecord').doc(id).get();
-            const row = (res && res.data && res.data[0]) || null;
-            return row ? (row.records || {}) : {};
+            try {
+                if (!window.db) {
+                    console.warn('⏳ 等待 CloudBase 初始化...');
+                    let retries = 0;
+                    while (!window.db && retries < 20) {
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                        retries++;
+                    }
+                    if (!window.db) {
+                        console.error('❌ CloudBase 未初始化');
+                        return {};
+                    }
+                }
+                await window.ready;
+                const id = docId(personKey);
+                const res = await window.db.collection('WeightRecord').doc(id).get();
+                const row = (res && res.data && res.data[0]) || null;
+                return row ? (row.records || {}) : {};
+            } catch(e) {
+                console.error('❌ 加载失败', personKey, e);
+                return {};
+            }
         }
 
         async function saveCloud(personKey, dataObj) {
             try {
+                // 等待 CloudBase 初始化完成
+                if (!window.db) {
+                    console.warn('⏳ 等待 CloudBase 初始化...');
+                    let retries = 0;
+                    while (!window.db && retries < 20) {
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                        retries++;
+                    }
+                    if (!window.db) {
+                        throw new Error('CloudBase 初始化超时，请刷新页面重试');
+                    }
+                }
+                
                 await window.ready;
                 const id = docId(personKey);
                 await window.db.collection('WeightRecord').doc(id).set({ _id:id, personKey, records:dataObj||{}, updatedAtMs: Date.now() });
@@ -650,21 +692,30 @@
         }
 
         function subscribeCloud(personKey, cb) {
+            if (!window.db) {
+                console.error('❌ CloudBase 未初始化，无法订阅');
+                return { stop: () => {} };
+            }
             const id = docId(personKey);
             console.log('🔍 开始监听', personKey, id);
-            const watcher = window.db.collection('WeightRecord').doc(id).watch({
-                onChange: snap => {
-                    const d = snap.docs && snap.docs[0];
-                    console.log('📢 收到更新', personKey, d);
-                    if (d) cb(d.records || {});
-                },
-                onError: err => {
-                    window.lastError = err.message || String(err);
-                    console.error('❌ watch 错误', personKey, err);
-                    if (typeof toast === 'function') toast('实时同步失败：' + (err.message || '未知错误'));
-                }
-            });
-            return watcher;
+            try {
+                const watcher = window.db.collection('WeightRecord').doc(id).watch({
+                    onChange: snap => {
+                        const d = snap.docs && snap.docs[0];
+                        console.log('📢 收到更新', personKey, d);
+                        if (d) cb(d.records || {});
+                    },
+                    onError: err => {
+                        window.lastError = err.message || String(err);
+                        console.error('❌ watch 错误', personKey, err);
+                        if (typeof toast === 'function') toast('实时同步失败：' + (err.message || '未知错误'));
+                    }
+                });
+                return watcher;
+            } catch(e) {
+                console.error('❌ 订阅失败', personKey, e);
+                return { stop: () => {} };
+            }
         }
 
         window.cloudStorage = { ready: window.ready, load: loadCloud, save: saveCloud, subscribe: subscribeCloud };
