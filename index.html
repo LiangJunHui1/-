@@ -864,34 +864,119 @@
                         console.warn('⚠️ 初始查询失败', personKey, e);
                     }
                     
-                    // 开始监听实时更新
-                    const watcher = window.db.collection('WeightRecord').doc(id).watch({
-                        onChange: snap => {
-                            // CloudBase watch 返回的数据格式可能是 snap.docs 数组或单个文档对象
-                            let doc = null;
-                            if (snap.docs && snap.docs.length > 0) {
-                                doc = snap.docs[0];
-                            } else if (snap.doc) {
-                                doc = snap.doc;
-                            } else if (snap.data) {
-                                doc = snap;
+                    // 开始监听实时更新（带错误处理和轮询回退）
+                    let watchWatcher = null;
+                    let pollTimer = null;
+                    let watchRetries = 0;
+                    const MAX_WATCH_RETRIES = 3;
+                    
+                    const startPolling = () => {
+                        if (pollTimer) return; // 已在轮询中
+                        console.log(`🔄 使用轮询方案更新体重数据 ${personKey}（每 5 秒）`);
+                        pollTimer = setInterval(async () => {
+                            try {
+                                const queryResult = await window.db.collection('WeightRecord').doc(id).get();
+                                const docs = queryResult.data || [];
+                                if (docs.length > 0) {
+                                    const doc = docs[0];
+                                    console.log('📥 轮询获取体重数据', personKey, doc);
+                                    if (doc.records) {
+                                        cb(doc.records);
+                                    } else if (doc) {
+                                        cb(doc);
+                                    }
+                                }
+                            } catch(e) {
+                                console.warn('⚠️ 轮询失败', personKey, e);
                             }
-                            
-                            console.log('📢 收到体重数据更新', personKey, doc);
-                            if (doc && doc.records) {
-                                cb(doc.records);
-                            } else if (doc) {
-                                // 可能是整个文档对象
-                                cb(doc);
-                            }
-                        },
-                        onError: err => {
-                            window.lastError = err.message || String(err);
-                            console.error('❌ watch 错误', personKey, err);
-                            if (typeof toast === 'function') toast('实时同步失败：' + (err.message || '未知错误'));
+                        }, 5000);
+                    };
+                    
+                    const stopPolling = () => {
+                        if (pollTimer) {
+                            clearInterval(pollTimer);
+                            pollTimer = null;
                         }
-                    });
-                    return watcher;
+                    };
+                    
+                    const tryWatch = () => {
+                        try {
+                            watchWatcher = window.db.collection('WeightRecord').doc(id).watch({
+                                onChange: snap => {
+                                    stopPolling(); // watch 成功，停止轮询
+                                    // CloudBase watch 返回的数据格式可能是 snap.docs 数组或单个文档对象
+                                    let doc = null;
+                                    if (snap.docs && snap.docs.length > 0) {
+                                        doc = snap.docs[0];
+                                    } else if (snap.doc) {
+                                        doc = snap.doc;
+                                    } else if (snap.data) {
+                                        doc = snap;
+                                    }
+                                    
+                                    console.log('📢 收到体重数据更新', personKey, doc);
+                                    if (doc && doc.records) {
+                                        cb(doc.records);
+                                    } else if (doc) {
+                                        // 可能是整个文档对象
+                                        cb(doc);
+                                    }
+                                    watchRetries = 0; // 成功，重置重试次数
+                                },
+                                onError: err => {
+                                    window.lastError = err.message || String(err);
+                                    console.warn('⚠️ 体重数据 watch 错误, 切换到轮询方案:', personKey, err.message || err);
+                                    watchRetries++;
+                                    
+                                    // 停止 watch
+                                    if (watchWatcher && watchWatcher.close) {
+                                        try {
+                                            watchWatcher.close();
+                                        } catch(e) {}
+                                    }
+                                    watchWatcher = null;
+                                    
+                                    // 如果重试次数过多，切换到轮询
+                                    if (watchRetries >= MAX_WATCH_RETRIES) {
+                                        console.log(`🔄 体重数据 watch 重试次数过多，切换到轮询方案: ${personKey}`);
+                                        startPolling();
+                                    } else {
+                                        // 延迟后重试 watch
+                                        setTimeout(() => {
+                                            console.log(`🔄 重试体重数据 watch (${watchRetries}/${MAX_WATCH_RETRIES})... ${personKey}`);
+                                            tryWatch();
+                                        }, 2000);
+                                    }
+                                }
+                            });
+                            console.log(`✅ 体重数据 watch 连接成功: ${personKey}`);
+                        } catch(e) {
+                            console.error('❌ 体重数据 watch 初始化失败:', personKey, e);
+                            watchRetries++;
+                            if (watchRetries >= MAX_WATCH_RETRIES) {
+                                console.log(`🔄 体重数据 watch 初始化失败次数过多，切换到轮询方案: ${personKey}`);
+                                startPolling();
+                            } else {
+                                setTimeout(() => {
+                                    console.log(`🔄 重试体重数据 watch (${watchRetries}/${MAX_WATCH_RETRIES})... ${personKey}`);
+                                    tryWatch();
+                                }, 2000);
+                            }
+                        }
+                    };
+                    
+                    // 尝试启动 watch
+                    tryWatch();
+                    
+                    // 如果 watch 在 10 秒内未成功，启动轮询作为备用
+                    setTimeout(() => {
+                        if (!watchWatcher && !pollTimer) {
+                            console.log(`🔄 体重数据 watch 连接超时，启动轮询方案: ${personKey}`);
+                            startPolling();
+                        }
+                    }, 10000);
+                    
+                    return watchWatcher || { stop: () => { stopPolling(); } };
                 } catch(e) {
                     console.error('❌ 订阅失败', personKey, e);
                     return { stop: () => {} };
@@ -1216,6 +1301,5 @@
     </script>
 </body>
 </html>
-
 
 
