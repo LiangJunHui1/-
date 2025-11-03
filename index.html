@@ -305,17 +305,28 @@
                 if (target.value === '') delete localData[date]; else localData[date] = target.value;
                 saveData(personKey, localData);
                 
-                // 保存到云端前，先合并云端最新数据，避免覆盖其他设备的数据
+                // 保存到云端（带数据合并，避免覆盖其他设备的数据）
                 if (window.cloudStorage && window.cloudStorage.save) {
                     (async () => {
                         try {
-                            // 先从云端加载最新数据
-                            const remoteData = await window.cloudStorage.load(personKey);
-                            console.log('📥 保存前加载云端数据:', remoteData);
+                            // 先从云端加载最新数据（设置超时，避免长时间等待）
+                            let remoteData = null;
+                            try {
+                                const loadPromise = window.cloudStorage.load(personKey);
+                                const timeoutPromise = new Promise((_, reject) => 
+                                    setTimeout(() => reject(new Error('加载超时')), 3000)
+                                );
+                                remoteData = await Promise.race([loadPromise, timeoutPromise]);
+                                console.log('📥 保存前加载云端数据:', remoteData);
+                            } catch(loadError) {
+                                console.warn('⚠️ 加载云端数据失败，使用本地数据保存:', loadError.message);
+                                // 如果加载失败，直接使用本地数据，避免阻止保存
+                            }
                             
-                            // 合并本地更改和云端数据
-                            const mergedData = { ...(remoteData || {}), ...localData };
+                            // 合并本地更改和云端数据（如果有的话）
+                            const mergedData = remoteData ? { ...(remoteData || {}), ...localData } : localData;
                             console.log('🔀 合并后的数据:', mergedData);
+                            console.log('💾 准备保存到云端:', { personKey, dataSize: Object.keys(mergedData).length });
                             
                             // 保存合并后的数据
                             await window.cloudStorage.save(personKey, mergedData);
@@ -328,17 +339,22 @@
                             const inputs = document.querySelectorAll(`input[data-person="${personKey}"]`);
                             inputs.forEach(input => {
                                 const value = mergedData[input.dataset.date] ?? '';
-                                if (input.value !== String(value)) input.value = value;
+                                if (input.value !== String(value)) {
+                                    console.log(`🔄 更新界面: ${input.dataset.date} = ${value}`);
+                                    input.value = value;
+                                }
                             });
                             
                             const person = PEOPLE.find(p => p.key === personKey);
                             renderChart(person, false);
                         } catch(e) {
                             console.error('❌ 体重数据同步失败', personKey, e);
-                            toast('同步失败，请检查网络');
+                            console.error('错误详情:', e.stack || e);
                             // 即使云端同步失败，也要更新本地图表
                             const person = PEOPLE.find(p => p.key === personKey);
                             renderChart(person);
+                            // 只显示警告，不阻止用户操作
+                            toast('云端同步失败，数据已保存到本地');
                         }
                     })();
                 } else {
@@ -955,6 +971,7 @@
                         }
                         
                         // 如果没有 code 字段，也可能表示成功（某些情况下）
+                        // 或者 saveResult 为 null/undefined 也可能表示成功
                         // 保存成功，跳出循环
                         console.log('✅ 保存操作完成（无错误码，视为成功）');
                         break;
@@ -985,12 +1002,28 @@
                 }
                 
                 // 检查最终保存结果
-                if (saveResult && saveResult.code && saveResult.code !== 'SUCCESS' && saveResult.message) {
+                if (!saveResult) {
+                    console.warn('⚠️ 保存结果为空，可能保存失败');
+                    // 不抛出错误，因为某些情况下 saveResult 可能为 null 但保存已成功
+                } else if (saveResult && saveResult.code) {
+                    const errorCode = saveResult.code;
                     const errorMsg = saveResult.message || '';
-                    // 只有在明确是错误时才抛出异常
-                    if (errorMsg.includes('error') || errorMsg.includes('Error') || errorMsg.includes('failed') || errorMsg.includes('失败')) {
-                        throw new Error(`保存失败: ${errorMsg}`);
+                    
+                    // 检查是否是明确的错误
+                    if (errorCode === 'DATABASE_REQUEST_FAILED' || 
+                        errorCode === 'FAILED' ||
+                        errorMsg.includes('error') || 
+                        errorMsg.includes('Error') || 
+                        errorMsg.includes('failed') || 
+                        errorMsg.includes('失败')) {
+                        console.error('❌ 保存明确失败:', errorCode, errorMsg);
+                        throw new Error(`保存失败: ${errorCode} - ${errorMsg}`);
+                    } else {
+                        console.log('✅ 保存操作完成，返回码:', errorCode);
                     }
+                } else {
+                    // 没有 code 字段，可能表示成功
+                    console.log('✅ 保存操作完成（无错误码）');
                 }
                 
                 // 验证：保存后立即读取验证（但验证失败不影响保存成功的判断）
