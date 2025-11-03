@@ -903,195 +903,56 @@
                     data: dataToSave
                 });
                 
-                // 保存数据（带重试机制）- 根据 CloudBase 文档使用 update 和 set
+                // 保存数据（带重试机制）- 根据 CloudBase V2 文档，使用 set 方法（更新或创建）
+                // 参考：https://docs.cloudbase.net/api-reference/webv3/database/update
+                // set 方法可以更新文档，如果不存在则创建
                 let saveResult = null;
                 let saveAttempts = 0;
                 const MAX_SAVE_ATTEMPTS = 3;
-                let useSet = false; // 是否使用 set 方法
                 
                 while (saveAttempts < MAX_SAVE_ATTEMPTS) {
                     try {
                         saveAttempts++;
+                        console.log(`💾 尝试保存数据 (${saveAttempts}/${MAX_SAVE_ATTEMPTS})，使用 set 方法（更新或创建）...`);
                         
-                        if (!useSet) {
-                            // 优先尝试 update 方法（如果文档存在，update 不会有重复键错误）
-                            console.log(`💾 尝试保存数据 (${saveAttempts}/${MAX_SAVE_ATTEMPTS})，使用 update 方法...`);
-                            try {
-                                saveResult = await window.db.collection('WeightRecord').doc(id).update({
-                                    records: dataToSave.records,
-                                    updatedAtMs: dataToSave.updatedAtMs
-                                });
-                                console.log('💾 update 操作结果:', saveResult);
-                                
-                                // 如果 update 成功（updated > 0），完成
-                                if (saveResult && saveResult.updated > 0) {
-                                    console.log(`✅ update 成功，更新了 ${saveResult.updated} 条记录`);
-                                    break;
-                                }
-                                
-                                // 如果 updated: 0，说明文档不存在，改用 set 方法
-                                if (saveResult && saveResult.updated === 0) {
-                                    console.log('📝 update 返回 updated: 0，文档不存在，改用 set 方法创建');
-                                    useSet = true;
-                                    // 继续到 set 逻辑
-                                } else {
-                                    // 其他情况，继续重试 update
-                                    if (saveAttempts < MAX_SAVE_ATTEMPTS) {
-                                        await new Promise(resolve => setTimeout(resolve, 1000));
-                                        continue;
-                                    }
-                                }
-                            } catch(updateError) {
-                                const errorMsg = updateError.message || String(updateError);
-                                console.warn('⚠️ update 失败:', errorMsg);
-                                
-                                // 如果错误是文档不存在，改用 set
-                                if (errorMsg.includes('not found') || errorMsg.includes('不存在') || errorMsg.includes('does not exist')) {
-                                    console.log('📝 文档不存在，改用 set 方法');
-                                    useSet = true;
-                                } else {
-                                    // 其他错误，重试 update
-                                    if (saveAttempts < MAX_SAVE_ATTEMPTS) {
-                                        await new Promise(resolve => setTimeout(resolve, 1000));
-                                        continue;
-                                    }
-                                }
-                            }
-                        }
-                        
-                        // 使用 set 方法（文档不存在，或 update 返回 updated: 0）
-                        if (useSet) {
-                            console.log(`💾 尝试保存数据 (${saveAttempts}/${MAX_SAVE_ATTEMPTS})，使用 set 方法...`);
-                            saveResult = await window.db.collection('WeightRecord').doc(id).set(dataToSave);
-                        }
+                        // 根据 CloudBase V2 文档，set 方法可以更新或创建文档
+                        saveResult = await window.db.collection('WeightRecord').doc(id).set(dataToSave);
                         
                         console.log('💾 保存操作结果:', saveResult);
                         
                         // 检查保存结果
-                        // CloudBase set 方法返回的结果格式可能不同，需要检查多个字段
-                        if (saveResult) {
-                            // 检查 updated 字段（update 操作返回的）
-                            if (saveResult.updated !== undefined) {
-                                if (saveResult.updated > 0) {
-                                    console.log(`✅ 保存成功，更新了 ${saveResult.updated} 条记录`);
-                                    break;
-                                } else if (saveResult.upsertedId) {
-                                    console.log(`✅ 保存成功，创建了新文档: ${saveResult.upsertedId}`);
-                                    break;
-                                } else {
-                                    console.warn('⚠️ updated: 0，可能保存失败，尝试重试...');
-                                    if (saveAttempts < MAX_SAVE_ATTEMPTS) {
-                                        await new Promise(resolve => setTimeout(resolve, 1000));
-                                        continue;
-                                    }
-                                }
-                            }
+                        // 根据 CloudBase V2 文档，set 方法返回成功时通常没有错误码
+                        if (saveResult && saveResult.code) {
+                            const errorCode = saveResult.code;
+                            const errorMsg = saveResult.message || '';
                             
-                            // 检查是否有错误码
-                            if (saveResult.code) {
-                                const errorCode = saveResult.code;
-                                const errorMsg = saveResult.message || '';
-                                
-                                // 如果是重复键错误，说明文档存在，应该使用 update 而不是 set
-                                if (errorMsg.includes('duplicate key') || errorMsg.includes('E11000')) {
-                                    console.log('🔄 检测到重复键错误，说明文档存在，改用 update 方法...');
-                                    useSet = false; // 切换到 update 方法
-                                    try {
-                                        // 使用 update 更新字段
-                                        saveResult = await window.db.collection('WeightRecord').doc(id).update({
-                                            records: dataToSave.records,
-                                            updatedAtMs: dataToSave.updatedAtMs
-                                        });
-                                        console.log('💾 update 操作结果:', saveResult);
-                                        
-                                        if (saveResult && saveResult.updated > 0) {
-                                            console.log(`✅ 使用 update 成功，更新了 ${saveResult.updated} 条记录`);
-                                            break;
-                                        } else {
-                                            console.warn('⚠️ update 返回 updated: 0，继续重试...');
-                                            if (saveAttempts < MAX_SAVE_ATTEMPTS) {
-                                                await new Promise(resolve => setTimeout(resolve, 1000));
-                                                continue;
-                                            }
-                                        }
-                                    } catch(updateError) {
-                                        console.warn('⚠️ update 也失败:', updateError.message);
-                                        if (saveAttempts < MAX_SAVE_ATTEMPTS) {
-                                            await new Promise(resolve => setTimeout(resolve, 1000));
-                                            continue;
-                                        }
-                                    }
-                                }
-                                
-                                // 如果是明确错误
-                                if (errorCode === 'DATABASE_REQUEST_FAILED' || 
-                                    errorCode === 'FAILED' ||
-                                    errorMsg.includes('error') || 
-                                    errorMsg.includes('Error') || 
-                                    errorMsg.includes('failed') || 
-                                    errorMsg.includes('失败')) {
-                                    if (saveAttempts < MAX_SAVE_ATTEMPTS) {
-                                        console.warn(`⚠️ 保存失败 (${errorCode})，${errorMsg}`);
-                                        console.log(`🔄 等待 ${saveAttempts * 1000}ms 后重试...`);
-                                        await new Promise(resolve => setTimeout(resolve, saveAttempts * 1000));
-                                        continue; // 重试
-                                    } else {
-                                        throw new Error(`${errorCode}: ${errorMsg}`);
-                                    }
+                            // 如果是明确的错误，需要重试或抛出
+                            if (errorCode === 'DATABASE_REQUEST_FAILED' || 
+                                errorCode === 'FAILED' ||
+                                errorMsg.includes('error') || 
+                                errorMsg.includes('Error') || 
+                                errorMsg.includes('failed') || 
+                                errorMsg.includes('失败')) {
+                                if (saveAttempts < MAX_SAVE_ATTEMPTS) {
+                                    console.warn(`⚠️ 保存失败 (${errorCode})，${errorMsg}`);
+                                    console.log(`🔄 等待 ${saveAttempts * 1000}ms 后重试...`);
+                                    await new Promise(resolve => setTimeout(resolve, saveAttempts * 1000));
+                                    continue; // 重试
                                 } else {
-                                    // 没有明确错误，视为成功
-                                    console.log('✅ 保存操作成功');
-                                    break;
+                                    throw new Error(`保存失败: ${errorCode} - ${errorMsg}`);
                                 }
                             } else {
-                                // 没有 code 字段，可能表示成功
-                                console.log('✅ 保存操作完成（无错误码，视为成功）');
+                                // 其他情况视为成功
+                                console.log('✅ 保存操作成功');
                                 break;
                             }
                         } else {
-                            // saveResult 为空，可能保存失败
-                            console.warn('⚠️ 保存结果为空，尝试重试...');
-                            if (saveAttempts < MAX_SAVE_ATTEMPTS) {
-                                await new Promise(resolve => setTimeout(resolve, 1000));
-                                continue;
-                            }
+                            // 没有错误码，视为成功
+                            console.log('✅ 保存操作成功（使用 set 方法更新或创建文档）');
+                            break;
                         }
-                        
-                        // 如果没有明确成功或失败，也视为成功
-                        break;
                     } catch(e) {
                         const errorMsg = e.message || String(e);
-                        
-                        // 如果是重复键错误，说明文档存在，应该使用 update 而不是 set
-                        if (errorMsg.includes('duplicate key') || errorMsg.includes('E11000')) {
-                            console.log('🔄 检测到重复键错误（在 catch 中），说明文档存在，改用 update 方法...');
-                            useSet = false; // 切换到 update 方法
-                            try {
-                                // 使用 update 更新字段
-                                saveResult = await window.db.collection('WeightRecord').doc(id).update({
-                                    records: dataToSave.records,
-                                    updatedAtMs: dataToSave.updatedAtMs
-                                });
-                                console.log('💾 update 操作结果:', saveResult);
-                                
-                                if (saveResult && saveResult.updated > 0) {
-                                    console.log(`✅ 使用 update 成功，更新了 ${saveResult.updated} 条记录`);
-                                    break;
-                                } else {
-                                    console.warn('⚠️ update 返回 updated: 0，继续重试...');
-                                    if (saveAttempts < MAX_SAVE_ATTEMPTS) {
-                                        await new Promise(resolve => setTimeout(resolve, 1000));
-                                        continue;
-                                    }
-                                }
-                            } catch(updateError) {
-                                console.warn('⚠️ update 也失败:', updateError.message);
-                                if (saveAttempts < MAX_SAVE_ATTEMPTS) {
-                                    await new Promise(resolve => setTimeout(resolve, 1000));
-                                    continue;
-                                }
-                            }
-                        }
                         
                         // 如果是网络错误或数据库请求失败，尝试重试
                         if ((errorMsg.includes('DATABASE_REQUEST_FAILED') || 
@@ -1158,16 +1019,14 @@
                             console.warn('   期望的数据:', expectedRecords);
                             console.warn('   实际的数据:', savedRecords);
                             
-                            // 如果数据不一致且保存结果是 updated: 0，尝试再次保存
-                            if (saveResult && saveResult.updated === 0 && saveAttempts < MAX_SAVE_ATTEMPTS) {
-                                console.log('🔄 检测到数据未更新，尝试再次保存...');
-                                try {
-                                    // 直接使用 set 强制更新
-                                    await window.db.collection('WeightRecord').doc(id).set(dataToSave);
-                                    console.log('✅ 强制更新成功');
-                                } catch(retryError) {
-                                    console.error('❌ 强制更新失败:', retryError);
-                                }
+                            // 如果数据不一致，尝试再次保存（使用 set 方法强制更新）
+                            console.log('🔄 检测到数据不一致，尝试再次保存...');
+                            try {
+                                // 使用 set 方法强制更新（set 可以更新或创建文档）
+                                await window.db.collection('WeightRecord').doc(id).set(dataToSave);
+                                console.log('✅ 强制更新成功');
+                            } catch(retryError) {
+                                console.error('❌ 强制更新失败:', retryError);
                             }
                         }
                     } else {
