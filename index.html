@@ -1119,6 +1119,9 @@
                             const doc = docs[0];
                             console.log('📥 初始加载体重数据', personKey, doc);
                             cb(doc.records || {});
+                        } else {
+                            console.log('📥 初始加载：未找到文档，推送空数据以清空界面', personKey);
+                            cb({});
                         }
                     } catch(e) {
                         console.warn('⚠️ 初始查询失败', personKey, e);
@@ -1132,7 +1135,7 @@
                     
                     const startPolling = () => {
                         if (pollTimer) return; // 已在轮询中
-                        console.log(`🔄 使用轮询方案更新体重数据 ${personKey}（每 10 秒）`);
+                        console.log(`🔄 使用轮询方案更新体重数据 ${personKey}（每 5 秒）`);
                         pollTimer = setInterval(async () => {
                             try {
                                 const queryResult = await window.db.collection('WeightRecord').doc(id).get();
@@ -1145,11 +1148,14 @@
                                     } else if (doc) {
                                         cb(doc);
                                     }
+                                } else {
+                                    // 文档被删除，推送空对象让界面清空
+                                    cb({});
                                 }
                             } catch(e) {
                                 console.warn('⚠️ 轮询失败', personKey, e);
                             }
-                        }, 10000); // 10秒轮询间隔，与全局轮询错开
+                        }, 5000); // 5秒轮询间隔，加快清空同步
                     };
                     
                     const stopPolling = () => {
@@ -1181,6 +1187,9 @@
                                     } else if (doc) {
                                         // 可能是整个文档对象
                                         cb(doc);
+                                    } else {
+                                        // 文档不存在（被删除）
+                                        cb({});
                                     }
                                     watchRetries = 0; // 成功，重置重试次数
                                 },
@@ -1626,5 +1635,6 @@
     </script>
 </body>
 </html>
+
 
 
