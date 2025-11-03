@@ -565,7 +565,6 @@
         <div class="content" id="views"></div>
     </div>
     <!-- 腾讯云 CloudBase 实时数据库（国内可用） -->
-    <script src="https://imgcache.qq.com/qcloud/tcbjs/2.15.0/tcb.umd.min.js" onload="initCloudBase()"></script>
     <script>
         // 全局变量（供诊断函数使用）
         window.TCB_ENV_ID = 'cloud1-3g1ct7bc04d6c606';
@@ -577,19 +576,57 @@
         window.db = null;
         window.ready = null;
 
+        // 多个备用 CDN（按优先级）
+        const SDK_URLS = [
+            'https://imgcache.qq.com/qcloud/tcbjs/2.15.0/tcb.umd.min.js',
+            'https://cdn.jsdelivr.net/npm/@cloudbase/js-sdk@2.5.1/dist/index.umd.min.js',
+            'https://unpkg.com/@cloudbase/js-sdk@2.5.1/dist/index.umd.min.js'
+        ];
+
+        // 动态加载 SDK
+        let sdkLoaded = false;
+        let currentUrlIndex = 0;
+
+        function loadSDK() {
+            if (sdkLoaded || typeof tcb !== 'undefined') {
+                initCloudBase();
+                return;
+            }
+
+            if (currentUrlIndex >= SDK_URLS.length) {
+                console.error('❌ 所有 CDN 都加载失败，请检查网络连接');
+                window.loginStatus = 'failed';
+                window.lastError = 'SDK 加载失败：所有 CDN 都无法访问';
+                if (typeof toast === 'function') {
+                    toast('CloudBase SDK 加载失败，请检查网络或刷新页面');
+                }
+                return;
+            }
+
+            const url = SDK_URLS[currentUrlIndex];
+            console.log(`📦 尝试加载 SDK (${currentUrlIndex + 1}/${SDK_URLS.length}): ${url}`);
+
+            const script = document.createElement('script');
+            script.src = url;
+            script.onload = () => {
+                sdkLoaded = true;
+                console.log('✅ SDK 加载成功');
+                initCloudBase();
+            };
+            script.onerror = () => {
+                console.warn(`⚠️ CDN ${currentUrlIndex + 1} 加载失败，尝试下一个...`);
+                currentUrlIndex++;
+                setTimeout(loadSDK, 500);
+            };
+            document.head.appendChild(script);
+        }
+
         // CloudBase 初始化（确保 SDK 加载完成）
         function initCloudBase() {
             if (typeof tcb === 'undefined') {
-                console.error('❌ CloudBase SDK 未加载，可能原因：1) 网络问题 2) CDN 访问受限');
+                console.error('❌ CloudBase SDK 未定义');
                 window.loginStatus = 'failed';
-                window.lastError = 'SDK 加载失败，请检查网络或 CDN';
-                // 延迟重试
-                setTimeout(() => {
-                    if (typeof tcb !== 'undefined') {
-                        console.log('🔄 SDK 延迟加载成功，重新初始化');
-                        initCloudBase();
-                    }
-                }, 2000);
+                window.lastError = 'SDK 未定义';
                 return;
             }
             
@@ -624,12 +661,13 @@
             }
         }
 
-        // 兼容：如果 SDK 已经加载完成
+        // 开始加载 SDK
         if (typeof tcb !== 'undefined') {
-            console.log('📦 SDK 已加载，立即初始化');
+            console.log('📦 SDK 已存在，直接初始化');
             initCloudBase();
         } else {
-            console.log('⏳ 等待 SDK 加载...');
+            console.log('⏳ 开始加载 SDK...');
+            loadSDK();
         }
 
         function docId(personKey) {
