@@ -301,19 +301,51 @@
                     toast('请输入 60–100 kg');
                     return;
                 }
-                const data = loadData(personKey);
-                if (target.value === '') delete data[date]; else data[date] = target.value;
-                saveData(personKey, data);
+                const localData = loadData(personKey);
+                if (target.value === '') delete localData[date]; else localData[date] = target.value;
+                saveData(personKey, localData);
+                
+                // 保存到云端前，先合并云端最新数据，避免覆盖其他设备的数据
                 if (window.cloudStorage && window.cloudStorage.save) {
-                    window.cloudStorage.save(personKey, data).then(() => {
-                        console.log('✅ 体重数据已同步到 CloudBase', personKey);
-                    }).catch((e) => {
-                        console.error('❌ 体重数据同步失败', personKey, e);
-                        toast('同步失败，请检查网络');
-                    });
+                    (async () => {
+                        try {
+                            // 先从云端加载最新数据
+                            const remoteData = await window.cloudStorage.load(personKey);
+                            console.log('📥 保存前加载云端数据:', remoteData);
+                            
+                            // 合并本地更改和云端数据
+                            const mergedData = { ...(remoteData || {}), ...localData };
+                            console.log('🔀 合并后的数据:', mergedData);
+                            
+                            // 保存合并后的数据
+                            await window.cloudStorage.save(personKey, mergedData);
+                            console.log('✅ 体重数据已同步到 CloudBase', personKey);
+                            
+                            // 更新本地数据为合并后的数据
+                            saveData(personKey, mergedData);
+                            
+                            // 更新界面（以防有来自其他设备的数据）
+                            const inputs = document.querySelectorAll(`input[data-person="${personKey}"]`);
+                            inputs.forEach(input => {
+                                const value = mergedData[input.dataset.date] ?? '';
+                                if (input.value !== String(value)) input.value = value;
+                            });
+                            
+                            const person = PEOPLE.find(p => p.key === personKey);
+                            renderChart(person, false);
+                        } catch(e) {
+                            console.error('❌ 体重数据同步失败', personKey, e);
+                            toast('同步失败，请检查网络');
+                            // 即使云端同步失败，也要更新本地图表
+                            const person = PEOPLE.find(p => p.key === personKey);
+                            renderChart(person);
+                        }
+                    })();
+                } else {
+                    // 如果没有云端存储，只更新本地图表
+                    const person = PEOPLE.find(p => p.key === personKey);
+                    renderChart(person);
                 }
-                const person = PEOPLE.find(p => p.key === personKey);
-                renderChart(person);
                 toast('已保存');
             }, 120);
 
