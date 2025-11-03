@@ -393,14 +393,14 @@
                 
                 // 测试写入
                 try {
-                    await window.db.collection('WeightRecord').doc(id).set({ _id:id, personKey, records:{'test':'123'}, updatedAtMs: Date.now() });
+                    await window.db.collection('WeightRecord').doc(id).set({ personKey, records:{'test':'123'}, updatedAtMs: Date.now() });
                     results.push('✅ 写入测试: 成功');
                     
                     // 清理测试数据
                     setTimeout(async () => {
                         try {
                             const current = await window.cloudStorage.load(personKey);
-                            await window.db.collection('WeightRecord').doc(id).set({ _id:id, personKey, records:current, updatedAtMs: Date.now() });
+                            await window.db.collection('WeightRecord').doc(id).set({ personKey, records:current, updatedAtMs: Date.now() });
                         } catch(e) {}
                     }, 1000);
                 } catch(e) {
@@ -786,7 +786,8 @@
                 
                 await window.ready;
                 const id = docId(personKey);
-                const dataToSave = { _id:id, personKey, records:dataObj||{}, updatedAtMs: Date.now() };
+                // 注意：不要在 dataToSave 中包含 _id，因为已经在 doc(id) 中指定了文档 ID
+                const dataToSave = { personKey, records:dataObj||{}, updatedAtMs: Date.now() };
                 console.log('💾 准备保存数据到 CloudBase 文档数据库:', {
                     collection: 'WeightRecord',
                     docId: id,
@@ -873,7 +874,7 @@
             const uid = window.auth.currentUser ? window.auth.currentUser.uid : ('anon_'+Math.random().toString(36).slice(2,8));
             const id = `${ROOM_ID}_${uid}`;
             const tab = document.querySelector('.tab-btn.active')?.dataset.target || 'liang';
-            await window.db.collection('Presence').doc(id).set({ _id:id, roomId:ROOM_ID, userId:uid, nick:NICK, tab, since:Date.now(), lastSeen:Date.now() });
+            await window.db.collection('Presence').doc(id).set({ roomId:ROOM_ID, userId:uid, nick:NICK, tab, since:Date.now(), lastSeen:Date.now() });
             myPresenceId = id; window.myPresence = { id };
             if (heartbeatTimer) clearInterval(heartbeatTimer);
             heartbeatTimer = setInterval(async ()=>{ try { await window.db.collection('Presence').doc(id).update({ lastSeen: Date.now() }); } catch(e) {} }, 20000);
