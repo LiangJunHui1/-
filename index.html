@@ -396,27 +396,43 @@
                 if (action === 'clear') {
                     if (confirm('确定清空该页的所有记录吗？此操作不可撤销。')) {
                         (async () => {
-                            // 先清空本地
+                            // 先清空本地与界面
                             saveData(personKey, {});
                             document.querySelectorAll(`input[data-person="${personKey}"]`).forEach(i => i.value = '');
                             const person = PEOPLE.find(p => p.key === personKey);
                             renderChart(person, false);
-                            
-                            // 再同步到云端并校验
+
+                            // 云端直接删除文档，避免历史字段残留
                             try {
-                                if (window.cloudStorage && window.cloudStorage.save) {
+                                if (window.db) {
+                                    try {
+                                        await window.ready;
+                                    } catch (_) {}
+                                    const id = docId(personKey);
+                                    await window.db.collection('WeightRecord').doc(id).remove();
+                                    console.log('✅ 已删除云端文档以完成清空', personKey, id);
+                                } else if (window.cloudStorage && window.cloudStorage.save) {
+                                    // 兜底：无 db 引用时，使用 set({})
                                     await window.cloudStorage.save(personKey, {});
-                                    console.log('✅ 清空操作已同步到 CloudBase', personKey);
-                                    // 验证云端是否已为空
+                                    console.log('✅ 使用 set({}) 作为清空兜底', personKey);
+                                }
+
+                                // 再次校验云端状态
+                                if (window.cloudStorage && window.cloudStorage.load) {
                                     const verify = await window.cloudStorage.load(personKey);
                                     if (verify && Object.keys(verify).length > 0) {
-                                        console.warn('⚠️ 云端验证仍存在数据，重试清空一次');
-                                        await window.cloudStorage.save(personKey, {});
+                                        console.warn('⚠️ 云端验证仍存在数据，尝试覆盖为空');
+                                        if (window.db) {
+                                            const id = docId(personKey);
+                                            await window.db.collection('WeightRecord').doc(id).set({ personKey, records: {}, updatedAtMs: Date.now() });
+                                        } else {
+                                            await window.cloudStorage.save(personKey, {});
+                                        }
                                     }
                                 }
                                 toast('已清空该页记录');
                             } catch(e2) {
-                                console.error('❌ 清空同步失败', personKey, e2);
+                                console.error('❌ 云端清空失败', personKey, e2);
                                 toast('云端清空失败，仅本地已清空');
                             }
                         })();
@@ -1610,6 +1626,5 @@
     </script>
 </body>
 </html>
-
 
 
