@@ -1093,8 +1093,9 @@
 
         function presenceRenderFromDocs(docs) {
             const now = Date.now();
-            // 超时时间：30秒（如果用户关闭页面，心跳停止，30秒后自动从列表中消失）
-            const TIMEOUT = 30000;
+            // 超时时间：5分钟（300秒）- 允许用户切换标签页一段时间后仍保持在线状态
+            // 如果用户真正关闭页面，心跳停止，5分钟后自动从列表中消失
+            const TIMEOUT = 300000;
             const alive = (docs||[]).filter(p => (now - (p.lastSeen||0)) < TIMEOUT);
             const count = alive.length;
             const names = alive.map(p => p.nick || '用户').join('、');
@@ -1180,9 +1181,9 @@
                                 const docs = snap.docs || [];
                                 console.log('📢 收到在线状态更新，用户数:', docs.length, docs);
                                 
-                                // 定期清理超时的在线状态（30秒未更新则删除）
+                                // 定期清理超时的在线状态（2分钟未更新则删除）
                                 const now = Date.now();
-                                const TIMEOUT = 30000;
+                                const TIMEOUT = 120000;
                                 const expiredDocs = docs.filter(p => (now - (p.lastSeen||0)) >= TIMEOUT);
                                 
                                 if (expiredDocs.length > 0) {
@@ -1281,14 +1282,47 @@
             }
         }
 
-        // 使用多种方式确保页面关闭时删除在线状态
-        // 方法1: visibilitychange - 当页面隐藏时（切换标签、最小化窗口等）
-        document.addEventListener('visibilitychange', () => {
+        // 使用多种方式处理页面显示/隐藏和关闭
+        // 方法1: visibilitychange - 当页面隐藏/显示时（切换标签、最小化窗口等）
+        document.addEventListener('visibilitychange', async () => {
             if (document.visibilityState === 'hidden') {
-                // 页面隐藏时，使用 sendBeacon 发送请求（同步）
-                if (myPresenceId && navigator.sendBeacon) {
-                    // 注意：CloudBase 不支持 sendBeacon，所以我们尝试异步删除
-                    removePresence();
+                // 页面隐藏时，停止心跳（但不删除在线状态，这样切回来时还在）
+                if (heartbeatTimer) {
+                    console.log('⏸️ 页面隐藏，停止心跳');
+                    clearInterval(heartbeatTimer);
+                    heartbeatTimer = null;
+                }
+            } else if (document.visibilityState === 'visible') {
+                // 页面显示时，立即更新 lastSeen 并恢复心跳
+                if (myPresenceId && window.db) {
+                    try {
+                        console.log('▶️ 页面显示，恢复在线状态');
+                        await window.ready;
+                        const tab = document.querySelector('.tab-btn.active')?.dataset.target || 'liang';
+                        // 立即更新 lastSeen
+                        await window.db.collection('Presence').doc(myPresenceId).update({ 
+                            lastSeen: Date.now(),
+                            tab: tab
+                        });
+                        // 恢复心跳
+                        if (!heartbeatTimer) {
+                            heartbeatTimer = setInterval(async () => {
+                                try {
+                                    if (myPresenceId && window.db) {
+                                        const currentTab = document.querySelector('.tab-btn.active')?.dataset.target || 'liang';
+                                        await window.db.collection('Presence').doc(myPresenceId).update({ 
+                                            lastSeen: Date.now(),
+                                            tab: currentTab
+                                        });
+                                    }
+                                } catch(e) {
+                                    console.warn('心跳更新失败:', e);
+                                }
+                            }, 20000);
+                        }
+                    } catch(e) {
+                        console.warn('⚠️ 恢复在线状态失败:', e);
+                    }
                 }
             }
         });
