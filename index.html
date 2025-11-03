@@ -903,54 +903,95 @@
                     data: dataToSave
                 });
                 
-                // 保存数据（带重试机制）- 根据 CloudBase V2 文档，使用 set 方法（更新或创建）
+                // 保存数据（带重试机制）- 根据 CloudBase V2 文档
                 // 参考：https://docs.cloudbase.net/api-reference/webv3/database/update
-                // set 方法可以更新文档，如果不存在则创建
+                // 优先使用 update 方法，如果文档不存在则使用 set 方法创建
                 let saveResult = null;
                 let saveAttempts = 0;
                 const MAX_SAVE_ATTEMPTS = 3;
+                let useSet = false; // 标记是否使用 set 方法
                 
                 while (saveAttempts < MAX_SAVE_ATTEMPTS) {
                     try {
                         saveAttempts++;
-                        console.log(`💾 尝试保存数据 (${saveAttempts}/${MAX_SAVE_ATTEMPTS})，使用 set 方法（更新或创建）...`);
                         
-                        // 根据 CloudBase V2 文档，set 方法可以更新或创建文档
-                        saveResult = await window.db.collection('WeightRecord').doc(id).set(dataToSave);
-                        
-                        console.log('💾 保存操作结果:', saveResult);
-                        
-                        // 检查保存结果
-                        // 根据 CloudBase V2 文档，set 方法返回成功时通常没有错误码
-                        if (saveResult && saveResult.code) {
-                            const errorCode = saveResult.code;
-                            const errorMsg = saveResult.message || '';
-                            
-                            // 如果是明确的错误，需要重试或抛出
-                            if (errorCode === 'DATABASE_REQUEST_FAILED' || 
-                                errorCode === 'FAILED' ||
-                                errorMsg.includes('error') || 
-                                errorMsg.includes('Error') || 
-                                errorMsg.includes('failed') || 
-                                errorMsg.includes('失败')) {
-                                if (saveAttempts < MAX_SAVE_ATTEMPTS) {
-                                    console.warn(`⚠️ 保存失败 (${errorCode})，${errorMsg}`);
-                                    console.log(`🔄 等待 ${saveAttempts * 1000}ms 后重试...`);
-                                    await new Promise(resolve => setTimeout(resolve, saveAttempts * 1000));
-                                    continue; // 重试
-                                } else {
-                                    throw new Error(`保存失败: ${errorCode} - ${errorMsg}`);
-                                }
-                            } else {
-                                // 其他情况视为成功
-                                console.log('✅ 保存操作成功');
+                        if (!useSet) {
+                            // 优先尝试 update 方法（如果文档存在）
+                            console.log(`💾 尝试保存数据 (${saveAttempts}/${MAX_SAVE_ATTEMPTS})，使用 update 方法...`);
+                            try {
+                                // 根据示例：db.collection("WeightRecord").doc("your-doc-name").update({...})
+                                saveResult = await window.db.collection('WeightRecord')
+                                    .doc(id)
+                                    .update({
+                                        records: dataToSave.records,
+                                        updatedAtMs: dataToSave.updatedAtMs
+                                    });
+                                
+                                console.log('💾 update 操作结果:', saveResult);
+                                
+                                // update 成功，完成保存
+                                console.log('✅ update 操作成功');
                                 break;
+                            } catch(updateError) {
+                                const errorMsg = updateError.message || String(updateError);
+                                console.warn('⚠️ update 失败:', errorMsg);
+                                
+                                // 如果错误是文档不存在，改用 set 方法创建
+                                if (errorMsg.includes('not found') || 
+                                    errorMsg.includes('不存在') || 
+                                    errorMsg.includes('does not exist') ||
+                                    errorMsg.includes('未找到')) {
+                                    console.log('📝 文档不存在，改用 set 方法创建...');
+                                    useSet = true;
+                                    // 继续到 set 逻辑
+                                } else {
+                                    // 其他错误，重试 update
+                                    if (saveAttempts < MAX_SAVE_ATTEMPTS) {
+                                        await new Promise(resolve => setTimeout(resolve, 1000));
+                                        continue;
+                                    } else {
+                                        throw updateError;
+                                    }
+                                }
                             }
-                        } else {
-                            // 没有错误码，视为成功
-                            console.log('✅ 保存操作成功（使用 set 方法更新或创建文档）');
+                        }
+                        
+                        // 使用 set 方法创建新文档（文档不存在时）
+                        if (useSet) {
+                            console.log(`💾 尝试保存数据 (${saveAttempts}/${MAX_SAVE_ATTEMPTS})，使用 set 方法创建文档...`);
+                            saveResult = await window.db.collection('WeightRecord').doc(id).set(dataToSave);
+                            console.log('💾 set 操作结果:', saveResult);
+                            
+                            // 检查 set 操作结果
+                            if (saveResult && saveResult.code) {
+                                const errorCode = saveResult.code;
+                                const errorMsg = saveResult.message || '';
+                                // 如果有错误码，继续到错误处理
+                                if (errorCode === 'DATABASE_REQUEST_FAILED' || 
+                                    errorCode === 'FAILED' ||
+                                    errorMsg.includes('error') || 
+                                    errorMsg.includes('Error') || 
+                                    errorMsg.includes('failed') || 
+                                    errorMsg.includes('失败')) {
+                                    if (saveAttempts < MAX_SAVE_ATTEMPTS) {
+                                        console.warn(`⚠️ set 失败 (${errorCode})，${errorMsg}`);
+                                        console.log(`🔄 等待 ${saveAttempts * 1000}ms 后重试...`);
+                                        await new Promise(resolve => setTimeout(resolve, saveAttempts * 1000));
+                                        continue; // 重试
+                                    } else {
+                                        throw new Error(`保存失败: ${errorCode} - ${errorMsg}`);
+                                    }
+                                }
+                            }
+                            
+                            // set 成功
+                            console.log('✅ set 操作成功（创建新文档）');
                             break;
                         }
+                        
+                        // 如果执行到这里，说明 update 成功了（因为 set 会 break）
+                        // update 成功，保存完成
+                        break;
                     } catch(e) {
                         const errorMsg = e.message || String(e);
                         
