@@ -291,6 +291,20 @@
         // 简易防抖
         function debounce(fn, wait){ let t; return (...args)=>{ clearTimeout(t); t=setTimeout(()=>fn(...args), wait); }; }
 
+        // 清空保护：在短时间内忽略来自云端的旧数据回流
+        window._clearingMap = window._clearingMap || {};
+        function markClearing(personKey) {
+            window._clearingMap[personKey] = Date.now();
+            setTimeout(() => {
+                const ts = window._clearingMap[personKey];
+                if (ts && Date.now() - ts > 7000) delete window._clearingMap[personKey];
+            }, 8000);
+        }
+        function isClearing(personKey) {
+            const ts = window._clearingMap && window._clearingMap[personKey];
+            return !!ts && (Date.now() - ts < 7000);
+        }
+
         function attachEvents() {
             const onInput = debounce((target) => {
                 const personKey = target.dataset.person;
@@ -309,22 +323,25 @@
                 if (window.cloudStorage && window.cloudStorage.save) {
                     (async () => {
                         try {
-                            // 先从云端加载最新数据（设置超时，避免长时间等待）
-                            let remoteData = null;
-                            try {
-                                const loadPromise = window.cloudStorage.load(personKey);
-                                const timeoutPromise = new Promise((_, reject) => 
-                                    setTimeout(() => reject(new Error('加载超时')), 3000)
-                                );
-                                remoteData = await Promise.race([loadPromise, timeoutPromise]);
-                                console.log('📥 保存前加载云端数据:', remoteData);
-                            } catch(loadError) {
-                                console.warn('⚠️ 加载云端数据失败，使用本地数据保存:', loadError.message);
-                                // 如果加载失败，直接使用本地数据，避免阻止保存
+                            let mergedData = localData;
+                            if (!isClearing(personKey)) {
+                                // 先从云端加载最新数据（设置超时，避免长时间等待）
+                                let remoteData = null;
+                                try {
+                                    const loadPromise = window.cloudStorage.load(personKey);
+                                    const timeoutPromise = new Promise((_, reject) => 
+                                        setTimeout(() => reject(new Error('加载超时')), 3000)
+                                    );
+                                    remoteData = await Promise.race([loadPromise, timeoutPromise]);
+                                    console.log('📥 保存前加载云端数据:', remoteData);
+                                } catch(loadError) {
+                                    console.warn('⚠️ 加载云端数据失败，使用本地数据保存:', loadError.message);
+                                }
+                                // 合并本地更改和云端数据（如果有的话）
+                                mergedData = remoteData ? { ...(remoteData || {}), ...localData } : localData;
+                            } else {
+                                console.log('🛡️ 清空保护中：跳过远端合并，仅保存本地数据');
                             }
-                            
-                            // 合并本地更改和云端数据（如果有的话）
-                            const mergedData = remoteData ? { ...(remoteData || {}), ...localData } : localData;
                             console.log('🔀 合并后的数据:', mergedData);
                             console.log('💾 准备保存到云端:', { personKey, dataSize: Object.keys(mergedData).length });
                             
@@ -396,6 +413,8 @@
                 if (action === 'clear') {
                     if (confirm('确定清空该页的所有记录吗？此操作不可撤销。')) {
                         (async () => {
+                            // 标记清空保护，防止旧数据在短时间内回流
+                            markClearing(personKey);
                             // 先清空本地与界面
                             saveData(personKey, {});
                             document.querySelectorAll(`input[data-person="${personKey}"]`).forEach(i => i.value = '');
@@ -592,6 +611,11 @@
                 PEOPLE.forEach(p => {
                     window.cloudStorage.subscribe(p.key, (remote) => {
                         console.log(`📢 收到 ${p.label} 的实时更新:`, remote);
+                        // 清空保护：若刚清空且远端仍返回旧数据，忽略本次
+                        if (isClearing(p.key) && remote && Object.keys(remote||{}).length > 0) {
+                            console.warn(`🛡️ 清空保护：忽略 ${p.label} 的旧数据回流`);
+                            return;
+                        }
                         // 合并远端数据到本地与界面
                         saveData(p.key, remote || {});
                         const inputs = document.querySelectorAll(`input[data-person="${p.key}"]`);
