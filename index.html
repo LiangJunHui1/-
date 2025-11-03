@@ -792,14 +792,34 @@
                     docId: id,
                     data: dataToSave
                 });
-                await window.db.collection('WeightRecord').doc(id).set(dataToSave);
-                console.log('✅ 保存成功', personKey, id);
-                console.log('📝 请在 CloudBase 控制台查看数据：');
-                console.log('   1. 登录 https://console.cloud.tencent.com/tcb');
-                console.log('   2. 选择环境:', window.TCB_ENV_ID);
-                console.log('   3. 进入「数据库」→「文档数据库」');
-                console.log('   4. 查看集合「WeightRecord」');
-                console.log('   5. 文档 ID:', id);
+                
+                // 保存数据
+                const saveResult = await window.db.collection('WeightRecord').doc(id).set(dataToSave);
+                console.log('💾 保存操作结果:', saveResult);
+                
+                // 验证：保存后立即读取验证
+                await new Promise(resolve => setTimeout(resolve, 500)); // 等待 500ms 确保数据写入
+                const verifyResult = await window.db.collection('WeightRecord').doc(id).get();
+                console.log('🔍 验证读取结果:', verifyResult);
+                
+                if (verifyResult && verifyResult.data && verifyResult.data.length > 0) {
+                    const savedData = verifyResult.data[0];
+                    console.log('✅ 保存成功并验证通过！', personKey, id);
+                    console.log('📊 已保存的数据:', savedData);
+                    console.log('📝 请在 CloudBase 控制台查看数据：');
+                    console.log('   1. 登录 https://console.cloud.tencent.com/tcb');
+                    console.log('   2. 选择环境:', window.TCB_ENV_ID);
+                    console.log('   3. 进入「数据库」→「文档数据库」');
+                    console.log('   4. 查看集合「WeightRecord」');
+                    console.log('   5. 文档 ID:', id);
+                    console.log('   6. 如果看不到数据，请检查集合权限设置');
+                } else {
+                    console.warn('⚠️ 保存成功但验证读取失败，可能的原因：');
+                    console.warn('   1. 集合权限不允许匿名用户读取');
+                    console.warn('   2. 数据可能还在写入中（尝试刷新页面）');
+                    console.warn('   3. 集合可能未创建（首次保存需要时间）');
+                    console.log('✅ 保存操作完成（但验证失败）', personKey, id);
+                }
             } catch(e) {
                 window.lastError = e.message || String(e);
                 console.error('❌ 保存失败', personKey, e);
@@ -915,6 +935,5 @@
     </script>
 </body>
 </html>
-
 
 
