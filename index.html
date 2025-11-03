@@ -305,6 +305,22 @@
             return !!ts && (Date.now() - ts < 7000);
         }
 
+        // 单日删除抖动保护：本机刚删除的日期，短时间内忽略远端回写
+        window._suppressMap = window._suppressMap || {};
+        function keyOf(personKey, date){ return `${personKey}__${date}`; }
+        function markSuppress(personKey, date) {
+            window._suppressMap[keyOf(personKey,date)] = Date.now();
+            setTimeout(() => {
+                const k = keyOf(personKey,date);
+                const ts = window._suppressMap[k];
+                if (ts && Date.now() - ts > 5000) delete window._suppressMap[k];
+            }, 6000);
+        }
+        function isSuppressed(personKey, date) {
+            const ts = window._suppressMap[keyOf(personKey,date)];
+            return !!ts && (Date.now() - ts < 5000);
+        }
+
         function attachEvents() {
             const onInput = debounce((target) => {
                 const personKey = target.dataset.person;
@@ -319,6 +335,8 @@
                 const localData = loadData(personKey);
                 if (isEmpty) {
                     delete localData[date];
+                    // 标记单日删除抖动保护
+                    markSuppress(personKey, date);
                 } else {
                     localData[date] = raw; // 暂存原始值（可能暂时越界）
                 }
@@ -345,6 +363,10 @@
                                 }
                                 // 合并本地更改和云端数据（如果有的话）
                                 mergedData = remoteData ? { ...(remoteData || {}), ...localData } : localData;
+                                // 若本次是删除该日期，明确从合并结果中删除该键，避免远端旧值回流
+                                if (isEmpty && mergedData.hasOwnProperty(date)) {
+                                    delete mergedData[date];
+                                }
                             } else {
                                 console.log('🛡️ 清空保护中：跳过远端合并，仅保存本地数据');
                             }
@@ -627,7 +649,10 @@
                         saveData(p.key, remote || {});
                         const inputs = document.querySelectorAll(`input[data-person="${p.key}"]`);
                         inputs.forEach(input => {
-                            const v = (remote || {})[input.dataset.date] ?? '';
+                            const d = input.dataset.date;
+                            // 若该日处于删除抖动保护，忽略远端值回写
+                            if (isSuppressed(p.key, d)) return;
+                            const v = (remote || {})[d] ?? '';
                             if (input.value !== String(v)) input.value = v;
                         });
                         renderChart(p, false);
@@ -645,7 +670,11 @@
                                 console.log(`🔄 轮询发现 ${p.label} 的数据有变化`);
                                 saveData(p.key, remote || {});
                                 const inputs = document.querySelectorAll(`input[data-person="${p.key}"]`);
-                                inputs.forEach(input => { input.value = (remote||{})[input.dataset.date] ?? ''; });
+                                inputs.forEach(input => {
+                                    const d = input.dataset.date;
+                                    if (isSuppressed(p.key, d)) return;
+                                    input.value = (remote||{})[d] ?? '';
+                                });
                                 renderChart(p, false);
                             }
                         }
