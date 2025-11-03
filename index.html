@@ -1181,9 +1181,9 @@
                                 const docs = snap.docs || [];
                                 console.log('📢 收到在线状态更新，用户数:', docs.length, docs);
                                 
-                                // 定期清理超时的在线状态（2分钟未更新则删除）
+                                // 定期清理超时的在线状态（5分钟未更新则删除）
                                 const now = Date.now();
-                                const TIMEOUT = 120000;
+                                const TIMEOUT = 300000;
                                 const expiredDocs = docs.filter(p => (now - (p.lastSeen||0)) >= TIMEOUT);
                                 
                                 if (expiredDocs.length > 0) {
@@ -1286,9 +1286,25 @@
         // 方法1: visibilitychange - 当页面隐藏/显示时（切换标签、最小化窗口等）
         document.addEventListener('visibilitychange', async () => {
             if (document.visibilityState === 'hidden') {
-                // 页面隐藏时，停止心跳（但不删除在线状态，这样切回来时还在）
+                // 页面隐藏时，更新一次 lastSeen，然后停止心跳（但不删除在线状态）
+                if (myPresenceId && window.db) {
+                    try {
+                        // 更新最后一次活动时间，这样可以给一个缓冲期
+                        window.ready.then(async () => {
+                            const tab = document.querySelector('.tab-btn.active')?.dataset.target || 'liang';
+                            await window.db.collection('Presence').doc(myPresenceId).update({ 
+                                lastSeen: Date.now(),
+                                tab: tab
+                            });
+                            console.log('⏸️ 页面隐藏，已更新最后活动时间，停止心跳');
+                        });
+                    } catch(e) {
+                        console.warn('更新最后活动时间失败:', e);
+                    }
+                }
+                
+                // 停止心跳
                 if (heartbeatTimer) {
-                    console.log('⏸️ 页面隐藏，停止心跳');
                     clearInterval(heartbeatTimer);
                     heartbeatTimer = null;
                 }
