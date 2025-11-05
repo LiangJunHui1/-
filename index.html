@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>体重记录表 - 梁 / 滕 / 乔</title>
+    <title>体重记录表 - 梁 / 滕 / 乔 / 慕</title>
     <!-- 移除外部依赖以提速：内置字体栈与自绘图表 -->
     <style>
         * { box-sizing: border-box; }
@@ -90,6 +90,7 @@
             { key: 'liang', label: '梁君辉', color: '#6366f1' },
             { key: 'teng',  label: '滕浠顺', color: '#22c55e' },
             { key: 'qiao',  label: '李乔', color: '#ef4444' },
+            { key: 'mu',    label: '慕忠伟', color: '#f59e0b' },
         ];
 
         const weekdays = ['日','一','二','三','四','五','六'];
@@ -710,7 +711,7 @@
     <div class="container">
         <div class="header">
             <div class="title">体重记录表</div>
-            <div class="sub">记录人员：梁君辉 · 滕浠顺 · 李乔｜开始：2025-11-03｜周期：2 个月</div>
+            <div class="sub">记录人员：梁君辉 · 滕浠顺 · 李乔 · 慕忠伟｜开始：2025-11-03｜周期：2 个月</div>
             <div class="motto">自律让我们每天进步一点点</div>
             <div class="presence" id="presenceBar" title="当前在线">
                 <span class="dot"></span>
@@ -1445,7 +1446,7 @@
                     const item = document.createElement('div'); item.className = 'presence-item';
                     const dur = Math.max(0, Math.floor((now - (p.since||now))/1000));
                     const mm = String(Math.floor(dur/60)).padStart(2,'0'); const ss = String(dur%60).padStart(2,'0');
-                    const tabLabel = p.tab==='liang' ? '梁君辉' : (p.tab==='teng' ? '滕浠顺' : (p.tab==='qiao' ? '李乔' : (p.tab||'')));
+                    const tabLabel = p.tab==='liang' ? '梁君辉' : (p.tab==='teng' ? '滕浠顺' : (p.tab==='qiao' ? '李乔' : (p.tab==='mu' ? '慕忠伟' : (p.tab||''))));
                     item.innerHTML = `<span class=\"dot\"></span><span>${p.nick||'用户'}</span><span class=\"badge\">${tabLabel}</span><span class=\"muted\">在线 ${mm}:${ss}</span>`;
                     listEl.appendChild(item);
                 });
