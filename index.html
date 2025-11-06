@@ -188,6 +188,40 @@
             return { labels, values };
         }
 
+        // 构建汇总对比section
+        function buildComparisonSection() {
+            const section = document.createElement('div');
+            section.className = 'section';
+            section.id = 'section_comparison';
+
+            const toolbar = document.createElement('div');
+            toolbar.className = 'toolbar';
+            toolbar.innerHTML = `
+                <div class="range">日期范围：${fmtDate(START_DATE)} 至 ${fmtDate(END_DATE)}（共 ${dateRange(START_DATE, END_DATE).length} 天）</div>
+                <span class="muted">四个人的体重对比折线图</span>
+                <span style="flex:1"></span>
+            `;
+
+            const chartWrap = document.createElement('div');
+            chartWrap.className = 'chart-wrap sticky';
+            chartWrap.style.marginBottom = '20px';
+            chartWrap.innerHTML = `
+                <div class="chart-title">四人体重对比趋势</div>
+                <canvas id="chart_comparison" height="300"></canvas>
+                <div class="muted" style="margin-top: 12px;">提示：留空表示未记录，曲线会自动跳过。</div>
+                <div style="display: flex; gap: 16px; margin-top: 12px; flex-wrap: wrap;">
+                    ${PEOPLE.map(p => `<div style="display: flex; align-items: center; gap: 6px;">
+                        <span style="display: inline-block; width: 12px; height: 3px; background: ${p.color}; border-radius: 2px;"></span>
+                        <span style="font-size: 12px; color: #475467;">${p.label}</span>
+                    </div>`).join('')}
+                </div>
+            `;
+
+            section.appendChild(toolbar);
+            section.appendChild(chartWrap);
+            return section;
+        }
+
         // 轻量原生 Canvas 折线图
         const charts = {};
         function renderChart(person, animate = false) {
@@ -289,6 +323,133 @@
             canvas.onmouseleave = () => renderChart(person, false);
         }
 
+        // 渲染多人对比图表
+        function renderComparisonChart(animate = false) {
+            const canvas = document.getElementById('chart_comparison');
+            if (!canvas) return;
+            const DPR = Math.min(window.devicePixelRatio || 1, 2);
+            const parentWidth = canvas.parentElement.clientWidth - 24;
+            const displayW = Math.max(480, parentWidth);
+            const displayH = 300;
+            canvas.style.width = displayW + 'px';
+            canvas.style.height = displayH + 'px';
+            canvas.width = Math.floor(displayW * DPR);
+            canvas.height = Math.floor(displayH * DPR);
+            const ctx = canvas.getContext('2d');
+            ctx.scale(DPR, DPR);
+
+            // 获取所有日期（使用第一个人的日期作为基准）
+            const dates = dateRange(START_DATE, END_DATE);
+            const labels = dates.map(d => fmtDate(d));
+
+            // 收集所有人的数据
+            const allSeries = PEOPLE.map(person => {
+                const data = loadData(person.key);
+                const values = labels.map(date => {
+                    const val = data[date];
+                    return val === '' || val === undefined ? null : Number(val);
+                });
+                return { person, values };
+            });
+
+            const padding = { left: 50, right: 10, top: 20, bottom: 35 };
+            const W = displayW - padding.left - padding.right;
+            const H = displayH - padding.top - padding.bottom;
+
+            // 计算所有数据的最小值和最大值
+            const allValues = allSeries.flatMap(s => s.values.filter(v => v != null));
+            let minY = Math.min(...allValues);
+            let maxY = Math.max(...allValues);
+            if (!isFinite(minY) || !isFinite(maxY)) { minY = 40; maxY = 100; }
+            if (minY === maxY) { minY -= 1; maxY += 1; }
+            const margin = (maxY - minY) * 0.1;
+            minY -= margin; maxY += margin;
+
+            function xAt(i) { return padding.left + i * (W / ((labels.length - 1) || 1)); }
+            function yAt(v) { return padding.top + (H - (v - minY) / (maxY - minY) * H); }
+
+            // 背景
+            ctx.clearRect(0, 0, displayW, displayH);
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, displayW, displayH);
+
+            // 网格与坐标（Y 轴）
+            ctx.strokeStyle = '#eef0f6';
+            ctx.lineWidth = 1;
+            const gridLines = 5;
+            for (let i = 0; i <= gridLines; i++) {
+                const y = padding.top + (H / gridLines) * i;
+                ctx.beginPath(); ctx.moveTo(padding.left, y); ctx.lineTo(displayW - padding.right, y); ctx.stroke();
+                const val = (maxY - (maxY - minY) * (i / gridLines)).toFixed(0);
+                ctx.fillStyle = '#98a2b3'; ctx.font = '12px system-ui';
+                ctx.fillText(val, 8, y + 4);
+            }
+
+            // X 轴：每 7 天一个刻度
+            const step = 7;
+            const axisY = displayH - padding.bottom + 6;
+            ctx.fillStyle = '#98a2b3'; ctx.font = '12px system-ui';
+            ctx.strokeStyle = '#e5e7ef';
+            for (let i = 0; i < labels.length; i += step) {
+                const x = xAt(i);
+                ctx.beginPath(); ctx.moveTo(x, displayH - padding.bottom); ctx.lineTo(x, displayH - padding.bottom + 4); ctx.stroke();
+                const label = labels[i].slice(5);
+                const textW = ctx.measureText(label).width;
+                ctx.fillText(label, x - textW/2, axisY + 12);
+            }
+
+            // 绘制每个人的折线
+            allSeries.forEach(({ person, values }) => {
+                ctx.lineWidth = 2.5;
+                ctx.strokeStyle = person.color;
+                ctx.fillStyle = person.color + '22';
+
+                let prevValid = null;
+                ctx.beginPath();
+                labels.forEach((d, i) => {
+                    const v = values[i];
+                    if (v == null) { prevValid = null; return; }
+                    const x = xAt(i); const y = yAt(v);
+                    if (prevValid == null) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+                    prevValid = [x, y];
+                });
+                ctx.stroke();
+            });
+
+            // 鼠标悬浮显示所有数据点
+            canvas.onmousemove = (e) => {
+                const rect = canvas.getBoundingClientRect();
+                const relX = (e.clientX - rect.left) * (displayW / rect.width);
+                const idxFloat = (relX - padding.left) / (W / (labels.length - 1 || 1));
+                const idx = Math.max(0, Math.min(labels.length - 1, Math.round(idxFloat)));
+                
+                // 重绘基础图表
+                renderComparisonChart(false);
+                
+                // 绘制所有人在该日期的数据点
+                allSeries.forEach(({ person, values }) => {
+                    const v = values[idx];
+                    if (v == null) return;
+                    const cx = xAt(idx); const cy = yAt(v);
+                    ctx.fillStyle = '#fff';
+                    ctx.strokeStyle = person.color;
+                    ctx.lineWidth = 2.5;
+                    ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+                });
+            };
+            canvas.onmouseleave = () => renderComparisonChart(false);
+        }
+
+        // 更新图表辅助函数：如果当前在对比页面，也更新对比图表
+        function updateCharts(person) {
+            renderChart(person, false);
+            // 如果当前显示的是对比页面，也更新对比图表
+            const activeSection = document.querySelector('.section.active');
+            if (activeSection && activeSection.id === 'section_comparison') {
+                renderComparisonChart(false);
+            }
+        }
+
         // 简易防抖
         function debounce(fn, wait){ let t; return (...args)=>{ clearTimeout(t); t=setTimeout(()=>fn(...args), wait); }; }
 
@@ -352,7 +513,7 @@
                             await deleteDateCloud(personKey, date);
                             console.log('✅ 单日删除已同步到云端', personKey, date);
                             const person = PEOPLE.find(p => p.key === personKey);
-                            renderChart(person, false);
+                            if (person) updateCharts(person);
                         } catch (eDel) {
                             console.error('❌ 单日删除云端同步失败', eDel);
                             toast('云端删除失败，仅本地已删除');
@@ -405,13 +566,13 @@
                             });
                             
                             const person = PEOPLE.find(p => p.key === personKey);
-                            renderChart(person, false);
+                            if (person) updateCharts(person);
                         } catch(e) {
                             console.error('❌ 体重数据同步失败', personKey, e);
                             console.error('错误详情:', e.stack || e);
                             // 即使云端同步失败，也要更新本地图表
                             const person = PEOPLE.find(p => p.key === personKey);
-                            renderChart(person);
+                            if (person) updateCharts(person);
                             // 只显示警告，不阻止用户操作
                             toast('云端同步失败，数据已保存到本地');
                         }
@@ -419,7 +580,7 @@
                 } else {
                     // 如果没有云端存储，只更新本地图表
                     const person = PEOPLE.find(p => p.key === personKey);
-                    renderChart(person);
+                    if (person) updateCharts(person);
                 }
                 // 仅在合法保存到云端或清空时提示已保存；越界输入过程不提示
                 if (isEmpty || inRange) toast('已保存');
@@ -462,7 +623,7 @@
                             saveData(personKey, {});
                             document.querySelectorAll(`input[data-person="${personKey}"]`).forEach(i => i.value = '');
                             const person = PEOPLE.find(p => p.key === personKey);
-                            renderChart(person, false);
+                            if (person) updateCharts(person);
 
                             // 云端直接删除文档，避免历史字段残留
                             try {
@@ -540,6 +701,8 @@
             // 构建 Tabs
             const tabs = document.getElementById('tabs');
             const views = document.getElementById('views');
+            
+            // 添加个人记录tab
             PEOPLE.forEach((p, idx) => {
                 const btn = document.createElement('button');
                 btn.className = 'tab-btn' + (idx===0 ? ' active' : '');
@@ -553,6 +716,16 @@
                 views.appendChild(sec);
             });
 
+            // 添加汇总对比tab
+            const comparisonBtn = document.createElement('button');
+            comparisonBtn.className = 'tab-btn';
+            comparisonBtn.textContent = '对比';
+            comparisonBtn.dataset.target = 'comparison';
+            tabs.appendChild(comparisonBtn);
+
+            const comparisonSec = buildComparisonSection();
+            views.appendChild(comparisonSec);
+
             tabs.addEventListener('click', (e) => {
                 const btn = e.target.closest('.tab-btn');
                 if (!btn) return;
@@ -561,9 +734,19 @@
                 const key = btn.dataset.target;
                 document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
                 document.getElementById(`section_${key}`).classList.add('active');
-                const person = PEOPLE.find(p => p.key === key);
-                renderChart(person, false);
-                scrollToTodayIfVisible(document.getElementById(`section_${key}`));
+                
+                if (key === 'comparison') {
+                    // 汇总对比页面
+                    renderComparisonChart(false);
+                } else {
+                    // 个人记录页面
+                    const person = PEOPLE.find(p => p.key === key);
+                    if (person) {
+                        renderChart(person, false);
+                        scrollToTodayIfVisible(document.getElementById(`section_${key}`));
+                    }
+                }
+                
                 // 更新在线状态当前Tab（TCB）
                 try { if (window.updatePresenceTab) window.updatePresenceTab(key); } catch(e) {}
             });
@@ -579,8 +762,12 @@
             window.addEventListener('resize', debounce(() => {
                 const activeBtn = document.querySelector('.tab-btn.active');
                 const key = activeBtn ? activeBtn.dataset.target : PEOPLE[0].key;
-                const person = PEOPLE.find(p => p.key === key);
-                renderChart(person, false);
+                if (key === 'comparison') {
+                    renderComparisonChart(false);
+                } else {
+                    const person = PEOPLE.find(p => p.key === key);
+                    if (person) renderChart(person, false);
+                }
             }, 120));
 
             // 云端订阅（CloudBase）与首次拉取
@@ -627,7 +814,7 @@
                                 input.value = value;
                             });
                             
-                            renderChart(p, false);
+                            updateCharts(p);
                             console.log(`✅ ${p.label} 的数据已加载到界面`);
                         } else {
                             console.log(`⚠️ ${p.label} 没有云端数据，清除本地缓存`);
@@ -640,7 +827,7 @@
                                 input.value = '';
                             });
                             
-                            renderChart(p, false);
+                            updateCharts(p);
                             console.log(`✅ ${p.label} 的本地缓存已清除`);
                         }
                     } catch(e) {
@@ -669,7 +856,7 @@
                             const v = (remote || {})[d] ?? '';
                             if (input.value !== String(v)) input.value = v;
                         });
-                        renderChart(p, false);
+                        updateCharts(p);
                     });
                 });
                 
@@ -689,7 +876,7 @@
                                     if (isSuppressed(p.key, d)) return;
                                     input.value = (remote||{})[d] ?? '';
                                 });
-                                renderChart(p, false);
+                                updateCharts(p);
                             }
                         }
                     } catch(e) {
